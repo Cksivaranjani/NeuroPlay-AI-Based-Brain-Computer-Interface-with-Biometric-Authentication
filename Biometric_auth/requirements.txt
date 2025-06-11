@@ -1,0 +1,4151 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_session import Session
+from psycopg2 import OperationalError
+from sqlalchemy import PickleType
+from werkzeug.utils import secure_filename
+
+import base64
+import os
+import uuid
+import cv2
+import numpy as np
+from pydub import AudioSegment
+import io
+from deepface import DeepFace
+from resemblyzer import VoiceEncoder, preprocess_wav
+from numpy import dot
+from numpy.linalg import norm
+
+# ---------- App Configuration ----------
+app = Flask(__name__)
+app.secret_key = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Siva%40123@localhost:5432/biometrics'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SESSION_TYPE'] = 'filesystem'
+
+Session(app)
+db = SQLAlchemy(app)
+
+# ---------- Resemblyzer Voice Encoder ----------
+voice_encoder = VoiceEncoder()
+
+# ---------- Database Model ----------
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    face_embedding = db.Column(PickleType, nullable=False)
+    voice_embedding = db.Column(PickleType, nullable=False)
+
+# ---------- Helper Functions ----------
+def extract_face_embedding(image_path):
+    try:
+        obj = DeepFace.represent(img_path=image_path, model_name='VGG-Face', enforce_detection=False)
+        embedding = np.array(obj[0]['embedding'])
+        return embedding
+    except Exception as e:
+        print(f"❌ Face embedding error: {e}")
+        return None
+
+def extract_voice_embedding(audio_path):
+    try:
+        wav = preprocess_wav(audio_path)
+        embedding = voice_encoder.embed_utterance(wav)
+        print(f"✅ Voice embedding generated. Length: {len(embedding)}")
+        return embedding
+    except Exception as e:
+        print("❌ Resemblyzer voice processing error:", e)
+        return None
+
+def is_match(embedding1, embedding2, threshold=0.6):
+    if embedding1 is None or embedding2 is None:
+        return False
+
+    embedding1 = np.array(embedding1).flatten()
+    embedding2 = np.array(embedding2).flatten()
+
+    if np.isnan(embedding1).any() or np.isnan(embedding2).any():
+        return False
+
+    similarity = dot(embedding1, embedding2) / (norm(embedding1) * norm(embedding2))
+    print(f"🔍 Voice similarity: {similarity}")
+
+    return similarity > (1 - threshold)
+
+def save_image(data_url, folder='static/faces'):
+    os.makedirs(folder, exist_ok=True)
+    encoded_data = data_url.split(',')[1]
+    img_data = base64.b64decode(encoded_data)
+    filename = f"{uuid.uuid4()}.png"
+    filepath = os.path.join(folder, filename)
+    with open(filepath, 'wb') as f:
+        f.write(img_data)
+    return filepath
+
+def save_audio_file(file_data, folder='static/voices'):
+    os.makedirs(folder, exist_ok=True)
+    filename = f"{uuid.uuid4()}.wav"
+    filepath = os.path.join(folder, filename)
+
+    try:
+        audio = AudioSegment.from_file(io.BytesIO(file_data), format="webm")
+        audio.export(filepath, format="wav")
+    except Exception as e:
+        print(f"❌ Audio error: {e}")
+        return None
+
+    return filepath
+
+# ---------- Routes ----------
+@app.route('/')
+def home():
+    return redirect(url_for('register'))
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        face_data = request.form['faceImage']
+        voice_data = request.form['voiceData']
+
+        if User.query.filter_by(email=email).first():
+            flash('Email already exists!')
+            return redirect(url_for('register'))
+
+        face_path = save_image(face_data)
+        voice_binary = base64.b64decode(voice_data.split(',')[1])
+        voice_path = save_audio_file(voice_binary)
+
+        if not voice_path:
+            flash('Invalid voice format.')
+            return redirect(url_for('register'))
+
+        face_embedding = extract_face_embedding(face_path)
+        voice_embedding = extract_voice_embedding(voice_path)
+
+        if face_embedding is None or voice_embedding is None or np.any(np.isnan(face_embedding)) or np.any(np.isnan(voice_embedding)):
+            flash('Failed to extract embeddings.')
+            return redirect(url_for('register'))
+
+        new_user = User(username=username, email=email, face_embedding=face_embedding, voice_embedding=voice_embedding)
+        db.session.add(new_user)
+        db.session.commit()
+
+        os.remove(face_path)
+        os.remove(voice_path)
+
+        flash('Registration successful!')
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        face_data = request.form['faceImage']
+        voice_data = request.form['voiceData']
+
+        user = User.query.filter_by(email=email).first()
+
+        if not user:
+            flash('Email not found!')
+            return redirect(url_for('login'))
+
+        face_path = save_image(face_data)
+        voice_binary = base64.b64decode(voice_data.split(',')[1])
+        voice_path = save_audio_file(voice_binary)
+
+        if not voice_path:
+            flash('Invalid voice format.')
+            return redirect(url_for('login'))
+
+        face_embedding = extract_face_embedding(face_path)
+        voice_embedding = extract_voice_embedding(voice_path)
+
+        if face_embedding is None or voice_embedding is None:
+            flash('Failed to extract embeddings. Please try again.')
+            os.remove(face_path)
+            os.remove(voice_path)
+            return redirect(url_for('login'))
+
+        face_match = is_match(face_embedding, user.face_embedding, threshold=0.7)
+        voice_match = is_match(voice_embedding, user.voice_embedding, threshold=0.6)
+
+        print(f"✅ Face match: {face_match}")
+        print(f"✅ Voice match: {voice_match}")
+
+        if not face_match:
+            flash('Face recognition failed. Please try again.')
+        if not voice_match:
+            flash('Voice recognition failed. Please try again.')
+
+        if face_match and voice_match:
+            flash('Login successful!')
+            os.remove(face_path)
+            os.remove(voice_path)
+            return redirect(url_for('home'))
+
+        os.remove(face_path)
+        os.remove(voice_path)
+        return redirect(url_for('login'))
+
+    return render_template('login.html')
+
+# ---------- Run App ----------
+if __name__ == '__main__':
+    with app.app_context():
+        try:
+            db.create_all()
+            print("✅ Database initialized successfully!")
+        except OperationalError as e:
+            print(f"❌ Database connection failed: {e}")
+
+    app.run(debug=True, use_reloader=False)
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Register</title>
+  <style>
+    video, img, audio {
+      max-width: 300px;
+      display: block;
+      margin-bottom: 10px;
+    }
+    progress {
+    width: 300px;
+    height: 20px;
+    margin-top: 5px;
+    appearance: none;
+  }
+  </style>
+</head>
+<body>
+  <h2>Register</h2>
+  <form id="registerForm" method="POST" enctype="multipart/form-data">
+    <label>Username:</label>
+    <input type="text" name="username" required><br><br>
+
+    <label>Email:</label>
+    <input type="email" name="email" required><br><br>
+
+    <!-- Face Section -->
+    <div>
+      <video id="faceCam" autoplay></video>
+      <img id="facePreview" style="display:none;">
+      <button type="button" onclick="captureFace()">Capture Face</button>
+      <input type="hidden" name="faceImage" id="faceImage">
+    </div><br>
+
+    <!-- Voice Section -->
+    <div>
+      <button type="button" onclick="startRecording()">Start Voice Recording</button>
+      <!-- <button type="button" onclick="stopRecording()">Stop</button> -->
+      <audio id="voicePlayback" controls style="display:none;"></audio>
+      <input type="hidden" name="voiceData" id="voiceData">
+    </div><br>
+
+    <button type="submit">Register</button>
+  </form>
+
+  <script>
+    // FACE CAPTURE
+    const video = document.getElementById('faceCam');
+    const facePreview = document.getElementById('facePreview');
+    const faceInput = document.getElementById('faceImage');
+  
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+      });
+  
+    function captureFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/png');
+      faceInput.value = imageData;
+      facePreview.src = imageData;
+      facePreview.style.display = 'block';
+      video.style.display = 'none';
+    }
+  
+    // VOICE RECORDING
+    let mediaRecorder;
+    let voiceChunks = [];
+  
+    function startRecording() {
+      const messageBox = document.createElement('p');
+      messageBox.id = 'recordMessage';
+      messageBox.style.color = 'blue';
+      messageBox.innerText = 'Recording started. Auto-stopping in 5 seconds...';
+      document.body.appendChild(messageBox);
+  
+      const countdown = document.createElement('p');
+      countdown.id = 'countdown';
+      countdown.style.fontWeight = 'bold';
+      document.body.appendChild(countdown);
+  
+      const progress = document.createElement('progress');
+      progress.id = 'recordProgress';
+      progress.max = 5;
+      progress.value = 0;
+      document.body.appendChild(progress);
+  
+      let count = 5;
+      countdown.innerText = count;
+  
+      const interval = setInterval(() => {
+        count--;
+        countdown.innerText = count;
+        progress.value = 5 - count;
+        if (count <= 0) clearInterval(interval);
+      }, 1000);
+  
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaRecorder = new MediaRecorder(stream);
+        voiceChunks = [];
+  
+        mediaRecorder.ondataavailable = e => voiceChunks.push(e.data);
+  
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(voiceChunks, { type: 'audio/wav' });
+          voiceChunks = [];
+  
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+          const base64Audio = reader.result;
+          document.getElementById('voiceData').value = base64Audio;
+
+          const audio = document.getElementById('voicePlayback');
+          audio.src = base64Audio;
+          audio.style.display = 'block';
+
+          // Remove recording UI
+          document.getElementById('recordMessage').remove();
+          document.getElementById('countdown').remove();
+          document.getElementById('recordProgress').remove();
+        };
+
+        reader.readAsDataURL(blob);
+      };
+
+      mediaRecorder.start();
+      setTimeout(() => mediaRecorder.stop(), 5000);
+    });
+  }
+  </script>
+</body>
+</html>
+
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Login</title>
+  <style>
+    video, img, audio {
+      max-width: 300px;
+      display: block;
+      margin-bottom: 10px;
+    }
+    progress {
+      width: 300px;
+      height: 20px;
+      margin-top: 5px;
+      appearance: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Login</h2>
+  <form id="loginForm" method="POST" enctype="multipart/form-data">
+    <label>Email:</label>
+    <input type="email" name="email" required><br><br>
+
+    <!-- Face Section -->
+    <div>
+      <video id="faceCam" autoplay></video>
+      <img id="facePreview" style="display:none;">
+      <button type="button" onclick="captureFace()">Capture Face</button>
+      <p id="faceCountdown" style="color: red; font-weight: bold;"></p>
+
+      <input type="hidden" name="faceImage" id="faceImage">
+    </div><br>
+
+    <!-- Voice Section -->
+    <div>
+      <button type="button" onclick="startRecording()">Start Voice Recording</button>
+      <audio id="voicePlayback" controls style="display:none;"></audio>
+      <input type="hidden" name="voiceData" id="voiceData">
+    </div><br>
+
+    <button type="submit" onclick="return validateCapture()">Login</button>
+  </form>
+
+  <script>
+    // FACE CAPTURE
+    const video = document.getElementById('faceCam');
+    const facePreview = document.getElementById('facePreview');
+    const faceInput = document.getElementById('faceImage');
+
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+      });
+
+      function captureFace() {
+  let count = 3;
+  const countdown = document.getElementById('faceCountdown');
+  countdown.innerText = `Capturing in ${count}...`;
+
+  const interval = setInterval(() => {
+    count--;
+    countdown.innerText = `Capturing in ${count}...`;
+    if (count <= 0) {
+      clearInterval(interval);
+      countdown.innerText = '';
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/png');
+      faceInput.value = imageData;
+      facePreview.src = imageData;
+      facePreview.style.display = 'block';
+      video.style.display = 'none';
+    }
+  }, 1000);
+}
+
+
+    function validateCapture() {
+    const face = document.getElementById("faceImage").value;
+    const voice = document.getElementById("voiceData").value;
+
+    if (!face) {
+      alert("Please capture your face.");
+      return false;
+    }
+    if (!voice) {
+      alert("Please record your voice.");
+      return false;
+    }
+    return true;
+  }
+
+    // VOICE RECORDING
+    let mediaRecorder;
+    let voiceChunks = [];
+
+    function startRecording() {
+      const messageBox = document.createElement('p');
+      messageBox.id = 'recordMessage';
+      messageBox.style.color = 'blue';
+      messageBox.innerText = 'Recording started. Auto-stopping in 5 seconds...';
+      document.body.appendChild(messageBox);
+
+      const countdown = document.createElement('p');
+      countdown.id = 'countdown';
+      countdown.style.fontWeight = 'bold';
+      document.body.appendChild(countdown);
+
+      const progress = document.createElement('progress');
+      progress.id = 'recordProgress';
+      progress.max = 5;
+      progress.value = 0;
+      document.body.appendChild(progress);
+
+      let count = 5;
+      countdown.innerText = count;
+
+      const interval = setInterval(() => {
+        count--;
+        countdown.innerText = count;
+        progress.value = 5 - count;
+        if (count <= 0) clearInterval(interval);
+      }, 1000);
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaRecorder = new MediaRecorder(stream);
+        voiceChunks = [];
+
+        mediaRecorder.ondataavailable = e => voiceChunks.push(e.data);
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(voiceChunks, { type: 'audio/wav' });
+          voiceChunks = [];
+
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+            document.getElementById('voiceData').value = reader.result;
+            const audio = document.getElementById('voicePlayback');
+            audio.src = reader.result;
+            audio.style.display = 'block';
+
+            // Cleanup UI
+            messageBox.remove();
+            countdown.remove();
+            progress.remove();
+          };
+        };
+
+        mediaRecorder.start();
+
+        // Auto-stop recording after 5 seconds
+        setTimeout(() => {
+          mediaRecorder.stop();
+          stream.getTracks().forEach(track => track.stop());
+        }, 5000);
+      });
+    }
+  </script>
+</body>
+</html>
+
+
+
+
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biometric Registration</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #00c6ff);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 30px 40px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      background: #f0f0f0;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .tab.active {
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      color: white;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 10px;
+      border: 1px solid #aaa;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+
+    form button {
+      width: 100%;
+      padding: 10px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      padding: 10px;
+    }
+
+    form button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+
+    .default-avatar {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+
+    progress {
+      width: 100%;
+      height: 15px;
+      border-radius: 10px;
+      margin-top: 10px;
+      appearance: none;
+    }
+
+    #recordMessage, #countdown {
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+    .button-row {
+  display: flex;
+  flex-direction: row;         /* Ensures horizontal layout */
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.button-row button {
+  flex: 1;                     /* Makes both buttons equally wide */
+  white-space: nowrap;        /* Prevents wrapping text */
+}
+.voice-btn{
+  margin-bottom: 10px;
+}
+#voicePlayback{
+  display: block;
+  margin: 10px auto;
+}
+  </style>
+</head>
+<body>
+  <div class="form-wrapper">
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('faceTab')">Register / Face</div>
+      <div class="tab" onclick="showTab('voiceTab')">Register / Voice</div>
+    </div>
+
+    <form id="registerForm" method="POST" enctype="multipart/form-data">
+      <!-- Face Tab -->
+      <div id="faceTab" class="tab-content active">
+        <h2>Face Registration</h2>
+        <label>Username</label>
+        <input type="text" name="username" required />
+        <label>Email</label>
+        <input type="email" name="email" required />
+        <div class="camera-container">
+          <video id="faceCam" autoplay muted></video>
+          <img id="facePreview" style="display:none;">
+          <img id="defaultAvatar" class="default-avatar" src="https://via.placeholder.com/300x200?text=No+Face+Captured" style="display:none;">
+        </div>
+        <!-- <button type="button" onclick="captureFace()">Capture Face</button>
+        <button type="button" onclick="retakeFace()" style="display:none;" id="retakeBtn">Retake</button> -->
+        <div class="button-row">
+          <button type="button" onclick="captureFace()">Capture Face</button>
+          <button type="button" class="retake-btn" onclick="retakeFace()" id="retakeBtn" style="display:none;">Retake</button>
+        </div>        
+        
+        <input type="hidden" name="faceImage" id="faceImage" />
+        <br>
+        <button type="submit">Register</button>
+      </div>
+
+      <!-- Voice Tab -->
+      <div id="voiceTab" class="tab-content">
+        <h2>Voice Registration</h2>
+        <label>Username</label>
+        <input type="text" name="voiceUsername" required />
+        <label>Email</label>
+        <input type="email" name="voiceEmail" required />
+        <button type="button" onclick="startRecording()" class="voice-btn">Start Voice Recording</button>
+        <progress id="recordProgress" value="0" max="5" style="display:none;"></progress>
+        <div id="recordMessage" style="display:none;">Recording...</div>
+        <div id="countdown" style="display:none;">5</div>
+        <audio id="voicePlayback" controls style="display:none;"></audio>
+        <input type="hidden" name="voiceData" id="voiceData" />
+        <br>
+        <button type="submit">Register</button>
+      </div>
+      <div style="text-align: center; margin-top: 20px;">
+        Already have an account?
+        <a href="{{ url_for('login') }}" style="color: #0072ff; text-decoration: none; font-weight: bold;">
+          Login
+        </a>
+      </div>             
+    </form>
+  </div>
+
+  <script>
+    function showTab(tabId) {
+      const tabs = document.querySelectorAll(".tab");
+      const contents = document.querySelectorAll(".tab-content");
+
+      tabs.forEach(tab => tab.classList.remove("active"));
+      contents.forEach(content => content.classList.remove("active"));
+
+      document.getElementById(tabId).classList.add("active");
+      document.querySelector(`.tab[onclick*="${tabId}"]`).classList.add("active");
+    }
+
+    const video = document.getElementById('faceCam');
+    const facePreview = document.getElementById('facePreview');
+    const faceInput = document.getElementById('faceImage');
+    const retakeBtn = document.getElementById('retakeBtn');
+    const defaultAvatar = document.getElementById('defaultAvatar');
+
+    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
+      .then(stream => {
+        video.srcObject = stream;
+      });
+
+    function captureFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/png');
+      faceInput.value = imageData;
+      facePreview.src = imageData;
+      facePreview.style.display = 'block';
+      video.style.display = 'none';
+      retakeBtn.style.display = 'inline-block';
+      defaultAvatar.style.display = 'none';
+    }
+
+    function retakeFace() {
+      video.style.display = 'block';
+      facePreview.style.display = 'none';
+      retakeBtn.style.display = 'none';
+      defaultAvatar.style.display = 'block';
+      faceInput.value = "";
+    }
+
+    let mediaRecorder;
+    let voiceChunks = [];
+
+    function startRecording() {
+      document.getElementById('recordMessage').style.display = 'block';
+      document.getElementById('countdown').style.display = 'block';
+      document.getElementById('recordProgress').style.display = 'block';
+
+      let count = 5;
+      const countdown = document.getElementById('countdown');
+      const progress = document.getElementById('recordProgress');
+
+      countdown.innerText = count;
+      progress.value = 0;
+
+      const interval = setInterval(() => {
+        count--;
+        countdown.innerText = count;
+        progress.value = 5 - count;
+        if (count <= 0) clearInterval(interval);
+      }, 1000);
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaRecorder = new MediaRecorder(stream);
+        voiceChunks = [];
+
+        mediaRecorder.ondataavailable = e => voiceChunks.push(e.data);
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(voiceChunks, { type: 'audio/wav' });
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+            const base64Audio = reader.result;
+            document.getElementById('voiceData').value = base64Audio;
+
+            const audio = document.getElementById('voicePlayback');
+            audio.src = base64Audio;
+            audio.style.display = 'block';
+
+            document.getElementById('recordMessage').style.display = 'none';
+            document.getElementById('countdown').style.display = 'none';
+            document.getElementById('recordProgress').style.display = 'none';
+          };
+        };
+
+        mediaRecorder.start();
+        setTimeout(() => mediaRecorder.stop(), 5000);
+      });
+    }
+  </script>
+</body>
+</html>
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biometric Login</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #00c6ff);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 30px 40px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      background: #f0f0f0;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .tab.active {
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      color: white;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 10px;
+      border: 1px solid #aaa;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+
+    form button {
+      width: 100%;
+      padding: 10px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    form button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+
+    .default-avatar {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .button-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .button-row button {
+      flex: 1;
+      white-space: nowrap;
+    }
+
+    .voice-btn {
+      margin-bottom: 10px;
+    }
+
+    #voicePlayback {
+      display: block;
+      margin: 10px auto;
+    }
+    progress {
+      width: 100%;
+      height: 15px;
+      border-radius: 10px;
+      margin-top: 10px;
+      appearance: none;
+    }
+
+    #recordMessage, #countdown {
+      text-align: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="form-wrapper">
+    <div class="tabs">
+      <div class="tab active" data-tab="faceLogin">Login / Face</div>
+      <div class="tab" data-tab="voiceLogin">Login / Voice</div>
+    </div>
+
+    <form id="loginForm" method="POST">
+      <!-- Face Login -->
+      <div id="faceLogin" class="tab-content active">
+        <h2>Face Login</h2>
+        <label>Username</label>
+        <input type="text" name="username" required />
+        <label>Email</label>
+        <input type="email" name="email" required />
+        <div class="camera-container">
+          <video id="loginFaceCam" autoplay muted></video>
+          <img id="loginFacePreview" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button type="button" onclick="captureLoginFace()">Capture Face</button>
+          <button type="button" onclick="retakeLoginFace()" id="retakeLoginBtn" style="display:none;">Retake</button>
+        </div>
+        <input type="hidden" name="loginFaceImage" id="loginFaceImage" />
+        <br>
+        <button type="submit">Login</button>
+      </div>
+
+      <!-- Voice Login -->
+      <div id="voiceLogin" class="tab-content">
+        <h2>Voice Login</h2>
+        <label>Username</label>
+        <input type="text" name="voiceUsername" required />
+        <label>Email</label>
+        <input type="email" name="voiceEmail" required />
+        <button type="button" onclick="startVoiceLogin()" class="voice-btn">Start Voice Login</button>
+        <progress id="recordProgress" value="0" max="5" style="display:none;"></progress>
+        <div id="recordMessage" style="display:none;">Recording...</div>
+        <div id="countdown" style="display:none;">5</div>
+        <audio id="voicePlayback" controls style="display:none;"></audio>
+        <input type="hidden" name="voiceLoginData" id="voiceLoginData" />
+        <br>
+        <button type="submit">Login</button>
+      </div>
+
+      <div style="text-align: center; margin-top: 20px;">
+        Don't have an account?
+        <a href="{{ url_for('register') }}" style="color: #0072ff; text-decoration: none; font-weight: bold;">
+          Register
+        </a>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.getAttribute('data-tab')).classList.add('active');
+      });
+    });
+
+    // Face capture logic
+    const loginVideo = document.getElementById('loginFaceCam');
+    const loginFacePreview = document.getElementById('loginFacePreview');
+    const loginFaceInput = document.getElementById('loginFaceImage');
+    const retakeLoginBtn = document.getElementById('retakeLoginBtn');
+
+    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
+      .then(stream => {
+        loginVideo.srcObject = stream;
+      });
+
+    function captureLoginFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = loginVideo.videoWidth;
+      canvas.height = loginVideo.videoHeight;
+      canvas.getContext('2d').drawImage(loginVideo, 0, 0);
+      const imageData = canvas.toDataURL('image/png');
+      loginFaceInput.value = imageData;
+      loginFacePreview.src = imageData;
+      loginFacePreview.style.display = 'block';
+      loginVideo.style.display = 'none';
+      retakeLoginBtn.style.display = 'inline-block';
+    }
+
+    function retakeLoginFace() {
+      loginVideo.style.display = 'block';
+      loginFacePreview.style.display = 'none';
+      retakeLoginBtn.style.display = 'none';
+      loginFaceInput.value = "";
+    }
+
+    // Voice login logic
+    function startVoiceLogin() {
+      document.getElementById('recordMessage').style.display = 'block';
+      document.getElementById('countdown').style.display = 'block';
+      document.getElementById('recordProgress').style.display = 'block';
+
+      let count = 5;
+      const countdown = document.getElementById('countdown');
+      const progress = document.getElementById('recordProgress');
+
+      countdown.innerText = count;
+      progress.value = 0;
+
+      const interval = setInterval(() => {
+        count--;
+        countdown.innerText = count;
+        progress.value = 5 - count;
+        if (count <= 0) clearInterval(interval);
+      }, 1000);
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        let mediaRecorder = new MediaRecorder(stream);
+        let voiceChunks = [];
+
+        mediaRecorder.ondataavailable = e => voiceChunks.push(e.data);
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(voiceChunks, { type: 'audio/wav' });
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = () => {
+            const base64Audio = reader.result;
+            document.getElementById('voiceLoginData').value = base64Audio;
+
+            const audio = document.getElementById('voicePlayback');
+            audio.src = base64Audio;
+            audio.style.display = 'block';
+
+            document.getElementById('recordMessage').style.display = 'none';
+            document.getElementById('countdown').style.display = 'none';
+            document.getElementById('recordProgress').style.display = 'none';
+          };
+        };
+
+        mediaRecorder.start();
+        setTimeout(() => mediaRecorder.stop(), 5000);
+      });
+    }
+  </script>
+</body>
+</html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f8fb;
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .hero {
+  text-align: center;
+  padding: 60px 20px;
+  background: url("{{ url_for('static', filename='images/hero-bg.jpg') }}") no-repeat center center/cover;
+  color: rgb(13, 13, 13);
+}
+
+    .hero h1 {
+      font-size: 48px;
+      font-family: 'Audiowide', cursive;
+      margin-bottom: 20px;
+    }
+
+    .hero p {
+      font-size: 20px;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .feature-card {
+      background-color: white;
+      width: 280px;
+      margin: 20px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    .feature-card h3 {
+      color: #0f4c81;
+      margin-bottom: 10px;
+    }
+
+    .cta {
+      text-align: center;
+      padding: 40px 20px;
+      background: #0f4c81;
+      color: white;
+    }
+
+    .cta a {
+      display: inline-block;
+      margin-top: 15px;
+      background-color: white;
+      color: #0f4c81;
+      font-weight: bold;
+      padding: 10px 20px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.3s;
+    }
+
+    .cta a:hover {
+      background-color: #ddd;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="#">About us</a>
+      <a href="#">Contact us</a>
+      <a href="{{ url_for('register') }}">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>Welcome to NeuroPlay</h1>
+    <p>Empowering individuals with disabilities through Brain-Computer Interface and AI — explore games, music, voice interaction, and virtual companionship in one inclusive platform.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Face & Voice Login</h3>
+      <p>Secure and hands-free login experience using facial recognition and voice authentication.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Maze Game</h3>
+      <p>Enhance cognitive control with an interactive AI-powered maze game.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Thought to Speech</h3>
+      <p>Convert your thoughts into spoken words using neural interface technology.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mood-Based Music</h3>
+      <p>Let AI understand your emotions and play music that matches your mood.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Virtual Pet</h3>
+      <p>Get company from a smart, friendly virtual pet that adapts to your needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Smart Alerts</h3>
+      <p>Stay safe with real-time health and emergency alerts tailored for you.</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Start your journey with NeuroPlay</h2>
+    <p>Join us in making technology truly accessible.</p>
+    <a href="{{ url_for('register') }}">Get Started</a>
+  </section>
+</body>
+</html>
+
+
+ body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #86dff8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 5px 30px;
+      border-bottom: 2px solid #000;
+      box-sizing: border-box;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 22px 32px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+      margin-top: 30px; /* Prevent overlap with header */
+      margin-bottom: 30px;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #e5f0fc;
+    }
+
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      background: #f0f0f0;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .tab.active {
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      color: white;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 11px;
+      border: 2px solid #b1b1b1;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 16px;
+      box-shadow: 0px 0px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    form button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    form button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+    .default-avatar {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .button-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .button-row button {
+      flex: 1;
+      white-space: nowrap;
+    }
+    .voice-btn {
+      margin-bottom: 10px;
+    }
+    #voicePlayback {
+      display: block;
+      margin: 10px auto;
+    }
+    progress {
+      width: 100%;
+      height: 15px;
+      border-radius: 10px;
+      margin-top: 10px;
+      appearance: none;
+    }
+    #recordMessage, #countdown {
+      text-align: center;
+      margin-top: 10px;
+    }
+    button i {
+      margin-right: 8px;
+    }
+
+
+
+    <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .hero { 
+  text-align: center;
+  padding: 25px 15px;
+  color: rgb(13, 13, 13);
+}
+
+.hero h1 {
+  font-size: 3rem;
+  font-family: 'Audiowide', cursive;
+  margin-bottom: 18px;
+  opacity: 0;
+  transform: translateY(30px);
+  animation: fadeSlideUp 1s ease-out forwards;
+  animation-delay: 0.5s;
+}
+
+.hero p {
+  font-size: 20px;
+  max-width: 1000px;
+  margin: 0 auto;
+  opacity: 0;
+  transform: translateY(30px);
+  animation: fadeSlideUp 1s ease-out forwards;
+  animation-delay: 1.2s;
+}
+
+@keyframes fadeSlideUp {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+} 
+
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 15px 8px;
+    }
+
+    .feature-card {
+      background-color: white;
+      width: 280px;
+      margin: 20px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    .feature-card h3 {
+      color: #0f4c81;
+      margin-bottom: 9px;
+    }
+
+    .cta {
+      text-align: center;
+      padding: 10px 5px;
+      background: #0f4c81;
+      color: white;
+    }
+
+    .cta a {
+      display: inline-block;
+      margin-top: 15px;
+      background-color: white;
+      color: #0f4c81;
+      font-weight: bold;
+      padding: 8px 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.3s;
+    }
+
+    .cta a:hover {
+      background-color: #ddd;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+      <a href="{{ url_for('register') }}">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>Welcome to NeuroPlay</h1>
+    <p>Empowering individuals with disabilities through Brain-Computer Interface and AI — explore games, music, voice interaction, and virtual companionship in one inclusive platform.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Face & Voice Login</h3>
+      <p>Secure and hands-free login experience using facial recognition and voice authentication.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Maze Game</h3>
+      <p>Enhance cognitive control with an interactive AI-powered maze game.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Thought to Speech</h3>
+      <p>Convert your thoughts into spoken words using neural interface technology.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mood-Based Music</h3>
+      <p>Let AI understand your emotions and play music that matches your mood.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Virtual Pet</h3>
+      <p>Get company from a smart, friendly virtual pet that adapts to your needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Smart Alerts</h3>
+      <p>Stay safe with real-time health and emergency alerts tailored for you.</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Start your journey with NeuroPlay</h2>
+    <p>Join us in making technology truly accessible.</p>
+    <a href="{{ url_for('register') }}">Get Started</a>
+  </section>
+</body>
+</html>
+
+
+# app.py
+
+from flask import Flask, request, jsonify
+import joblib
+import numpy as np
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Load the trained SVM model
+svm_model = joblib.load('eeg_svm_model.pkl')
+
+# Define the /predict route to handle predictions
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        # Get features from the incoming JSON request
+        features = np.array(request.json['features'])
+
+        # Predict the control direction (0: left, 1: right, 2: up, 3: down)
+        prediction = svm_model.predict([features])
+
+        # Map the prediction to game controls (You can customize this mapping)
+        control_mapping = {0: 'left', 1: 'right', 2: 'up', 3: 'down'}
+        control_command = control_mapping.get(prediction[0], 'stop')
+
+        # Return the predicted control command
+        return jsonify({'control': control_command})
+
+    except Exception as e:
+        # Handle errors (e.g., invalid input)
+        return jsonify({'error': str(e)}), 400
+
+# Run the Flask app
+if __name__ == '__main__':
+    app.run(debug=True)
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Thought-to-Speech</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .main-content {
+    text-align: center;
+    padding: 45px 20px;
+  }
+
+  .main-content h1 {
+    font-size: 32px;
+    margin-bottom: 55px;
+    font-weight: bold;
+    color: #000;
+    font-family: 'Audiowide', cursive;
+    opacity: 0;
+    transform: translateY(30px);
+    animation: fadeSlideUp 1s ease-out forwards;
+    animation-delay: 0.3s;
+  }
+
+  @keyframes fadeSlideUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+  .start-btn {
+    font-size: 20px;
+    background: linear-gradient(to right, #5fd3ff, #d491f0);
+    color: white;
+    font-weight: bold;
+    padding: 15px 30px;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    transition: transform 0.2s ease;
+    margin-bottom: 30px;
+  }
+
+  .start-btn:hover {
+    transform: scale(1.05);
+  }
+
+  .feedback-box {
+    background-color: #ffffff;
+    margin: 30px auto;
+    padding: 30px;
+    max-width: 780px;
+    border-radius: 12px;
+    font-weight: bold;
+    font-size: 18px;
+    color: #333;
+    box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.2);
+  }
+
+  .mic-visualizer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 50px;
+}
+
+.mic-icon {
+  font-size: 70px;
+  margin-bottom: 20px;
+}
+
+.sound-waves {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 40px;
+}
+
+.sound-waves span {
+  width: 8px;
+  height: 10px;
+  background: linear-gradient(to top, #4dc3ff, #c44be7);
+  animation: bounce 1s infinite ease-in-out;
+  animation-delay: calc(0.1s * var(--i));
+  border-radius: 20px;
+}
+
+@keyframes bounce {
+  0%, 100% {
+    height: 10px;
+  }
+  50% {
+    height: 35px;
+  }
+}
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+    </nav>
+  </header>
+
+  <div id="flash-data" data-message="{{ get_flashed_messages()[0] if get_flashed_messages() else '' }}"></div>
+
+  <div class="main-content">
+    <h1>Thought - To - Speech Conversion</h1>
+    <button class="start-btn">Start to think</button>
+  
+    <div class="feedback-box">
+      Wow! This is absolutely fantastic. It offers a unique and valuable. Lorem ipsum dolor sit amet consectetur adipisicing elit. Debitis nostrum libero autem necessitatibus ipsum placeat, natus nobis corrupti nulla eius odit excepturi praesentium quidem a tenetur. Voluptates nam tempora qui?
+    </div>
+  
+    <div class="mic-visualizer">
+        <div class="mic-icon">🎙️</div>
+        <div class="sound-waves">
+          <span style="--i:1;"></span>
+          <span style="--i:2;"></span>
+          <span style="--i:3;"></span>
+          <span style="--i:4;"></span>
+          <span style="--i:5;"></span>
+          <span style="--i:6;"></span>
+          <span style="--i:7;"></span>
+          <span style="--i:8;"></span>
+          <span style="--i:9;"></span>
+          <span style="--i:10;"></span>
+          <span style="--i:11;"></span>
+        </div>
+      </div>
+      
+  </div>
+  
+
+  <script>
+    const flashDiv = document.getElementById('flash-data');
+    const message = flashDiv.dataset.message;
+    if (message) {
+      alert(message);
+    }
+  </script>
+  
+</body>
+</html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Thought-to-Speech</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .main-content {
+      text-align: center;
+      padding: 45px 20px;
+    }
+
+    .main-content h1 {
+      font-size: 32px;
+      margin-bottom: 55px;
+      font-weight: bold;
+      color: #000;
+      font-family: 'Audiowide', cursive;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 0.3s;
+    }
+
+    @keyframes fadeSlideUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .start-btn {
+      font-size: 20px;
+      background: linear-gradient(to right, #5fd3ff, #d491f0);
+      color: white;
+      font-weight: bold;
+      padding: 15px 30px;
+      border: none;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+      margin-bottom: 30px;
+    }
+
+    .start-btn:hover {
+      transform: scale(1.05);
+    }
+
+    .feedback-box {
+      background-color: #ffffff;
+      margin: 30px auto;
+      padding: 30px;
+      max-width: 780px;
+      border-radius: 12px;
+      font-weight: bold;
+      font-size: 18px;
+      color: #333;
+      box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .mic-visualizer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 50px;
+    }
+
+    .mic-icon {
+      font-size: 70px;
+      margin-bottom: 25px;
+    }
+
+    .sound-waves {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      height: 40px;
+    }
+
+    .sound-waves span {
+      width: 8px;
+      height: 10px;
+      background: linear-gradient(to top, #4dc3ff, #c44be7);
+      animation: bounce 1s infinite ease-in-out;
+      animation-delay: calc(0.1s * var(--i));
+      border-radius: 20px;
+    }
+
+    @keyframes bounce {
+      0%, 100% {
+        height: 10px;
+      }
+      50% {
+        height: 35px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+    </nav>
+  </header>
+
+  <div id="flash-data" data-message="{{ get_flashed_messages()[0] if get_flashed_messages() else '' }}"></div>
+
+  <div class="main-content">
+    <h1>Thought - To - Speech Conversion</h1>
+    <button class="start-btn" id="start-btn">Start to think</button>
+    
+    <!-- Feedback box to display thought -->
+    <div class="feedback-box" id="feedback-box">
+      Click the button to start the thought-to-speech process!
+    </div>
+
+    <div class="mic-visualizer">
+      <div class="mic-icon">🎙️</div>
+      <div class="sound-waves">
+        <span style="--i:1;"></span>
+        <span style="--i:2;"></span>
+        <span style="--i:3;"></span>
+        <span style="--i:4;"></span>
+        <span style="--i:5;"></span>
+        <span style="--i:6;"></span>
+        <span style="--i:7;"></span>
+        <span style="--i:8;"></span>
+        <span style="--i:9;"></span>
+        <span style="--i:10;"></span>
+        <span style="--i:11;"></span>
+        <span style="--i:12;"></span>
+        <span style="--i:13;"></span>
+        <span style="--i:14;"></span>
+        <span style="--i:15;"></span>
+        <span style="--i:16;"></span>
+        <span style="--i:17;"></span>
+        <span style="--i:18;"></span>
+        <span style="--i:19;"></span>
+        <span style="--i:20;"></span>
+        <span style="--i:21;"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // When the button is clicked, call the backend to get the thought
+    document.getElementById("start-btn").addEventListener("click", function() {
+      fetch('/get-thought', { method: 'GET' })
+        .then(response => response.json())
+        .then(data => {
+          const thought = data.thought;
+          
+          // Display the thought in the feedback box
+          document.getElementById('feedback-box').textContent = thought;
+
+          // Convert the thought text to speech
+          const utterance = new SpeechSynthesisUtterance(thought);
+          window.speechSynthesis.speak(utterance);
+        })
+        .catch(error => console.error('Error fetching thought:', error));
+    });
+
+    const flashDiv = document.getElementById('flash-data');
+    const message = flashDiv.dataset.message;
+    if (message) {
+      alert(message);
+    }
+  </script>
+  
+</body>
+</html>
+
+
+# sending
+
+app.py
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+import pandas as pd
+from psycopg2 import OperationalError
+from werkzeug.utils import secure_filename
+
+import base64
+import os
+import uuid
+import numpy as np
+import io
+import cv2
+from deepface import DeepFace
+
+
+app = Flask(__name__)
+app.secret_key = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Siva%40123@localhost:5332/biometrics'
+
+db = SQLAlchemy(app)
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100))
+    email = db.Column(db.String(120), unique=False)
+    face_embedding = db.Column()
+    voice_embedding = db.Column()
+
+def extract_face_embedding(image_path):
+    try:
+        obj = DeepFace.represent(img_path=image_path, model_name='VGG', enforce_detection=true)
+        embedding = np.array(obj[1]['encoder'])
+        return embedding
+    except Exception as e:
+        return None
+
+def extract_voice_embedding(audio_path):
+    try:
+        wav = preprocess_wav(audio_path)
+        embedding = voice_encoder.embed_utterance(wav)
+        return embedding
+    except Exception as e:
+        return None
+
+def is_match(embedding1, embedding2, threshold=60):
+    if embedding1 is None or embedding2 is None:
+        return False
+
+    embedding1 = np.array(embedding1).flatten()
+    embedding2 = np.array(embedding2).flatten()
+
+    if np.isnan(embedding1).any() or np.isnan(embedding2).any():
+        return False
+
+    similarity = dot(embedding1, embedding2) / (norm(embedding1) * norm(embedding2))
+
+    return similarity > (70 - threshold)
+
+
+@app.route('/')
+def home():
+    return render_template('home.html')
+
+@app.route('/game')
+def game():
+    return render_template('game.html')
+
+@app.route('/about')
+def about():
+    return render_template('about.html')
+
+@app.route('/contact')
+def contact():
+    return render_template('contact.html')
+
+@app.route('/speech')
+def speech():
+    return render_template('speech.html')
+
+
+@app.route('/register', methods=['GET'])
+def register_face():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        face_data = request.form['faceImage']
+
+        if User.query.filter_by(email=email).first():
+            return redirect(url_for('register'))
+
+        face_path = save_image(face_data)
+        face_embedding = extract_face_embedding(face_path)
+
+        if face_embedding is None or np.any(np.isnan(face_embedding)):
+            return redirect(url_for('register'))
+
+        new_user = User(username=username, email=email, face_embedding=face_embedding, voice_embedding=[])
+
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login_voice():
+    if request.method == 'GET':
+        email = request.form['voiceEmail']
+        voice_data = request.form['voiceLoginData']
+
+        user = User.query.filter_by(email=email).first()
+        if user is None or user.voice_embedding is None and len(user.voice_embedding) == 0:
+            return redirect(url_for('login'))
+
+        try:
+            voice_binary = base64.b64decode(voice_data.split(' ')[0])
+        except Exception as e:
+            return redirect(url_for('login'))
+
+        voice_path = save_audio_file(voice_binary)
+        input_embedding = extract_voice_embedding(voice_path)
+      
+        voice_match = is_match(input_embedding, user.voice_embedding, threshold=60)
+
+        if voice_match:
+            return redirect(url_for('dashboard'))
+        else:
+            return redirect(url_for('login'))
+
+    return render_template('login.html')
+
+
+manual_input_1 = pd.DataFrame( columns=data.drop('Label', axis=0).columns)
+manual_input_2 = pd.DataFrame( columns=data.drop('Label', axis=3).columns)
+manual_input_3 = pd.DataFrame( columns=data.drop('Label', axis=7).columns)
+
+freq_band_1 = manual_input_1.flatten().tolist()
+freq_band_2 = manual_input_2.flatten().tolist()
+freq_band_3 = manual_input_3.flatten().tolist()
+
+predefined_data = {
+    'easy': {
+        'moves': ['down','down','down','down','right','right','right','down','down','right','right','right','right','right'],
+        'freq_bands': [freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1]
+    },
+    'medium': {
+        'moves': ['right','right','down','down','right','right','right','down','down','down','down','right','right','right'],
+        'freq_bands': [freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1]
+    },
+    'hard': {
+        'moves': ['down','down','down','down','right','right','right','down','down','right','right','right','right','right'],
+        'freq_bands': [freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1, freq_band_1]
+    }
+}
+
+
+@app.route('/next-move', methods=['GET'])
+def next_move():
+    difficulty = session.get('difficulty')
+    move_index = session.get('current_move_index', 0)
+
+    if not difficulty or difficulty not in predefined_data:
+        return jsonify({'error': 'No game in progress'}), 400
+
+    moves = predefined_data[difficulty]['moves']
+    freq_bands = predefined_data[difficulty]['freq_bands']
+
+    move = moves[move_index]
+    freq_input = freq_bands[move_index]
+
+    input_array = np.array([freq_input])
+    prediction = svm_model.predict(input_array)[0]
+    mental_state = state_map[prediction]
+
+    if mental_state == "Concentrated":
+        session['current_move_index'] = move_index + 1
+
+    return jsonify({
+        'status': 'ok',
+        'freq_band': freq_input
+    })
+
+
+@app.route('/getthought', methods=['POST'])
+def get_thought():
+    freq_input = random.choice()
+
+    input_array = np.array([freq_input])
+
+    prediction = svm_model.predict(input_array)[0]
+
+    thought_map = {
+    'Concentrated': [
+        "I'm laser-focused right now, completely immersed in what I'm doing without any distractions.",
+        "All my attention is on this task, and I'm determined to finish it with precision and clarity.",
+        "This task has all my concentration; every detail matters and I'm mentally locked in.",
+        "I'm fully in the zone, thinking clearly and sharply as if everything else around me has faded away.",
+        "My thoughts are aligned, and I feel mentally sharp, as though solving a puzzle piece by piece."
+    ],
+    'Stressed': [
+        "I feel a bit pressured right now, like my mind is racing to keep up with everything happening at once.",
+        "It's getting hard to stay calm; there's a weight pressing down on my thoughts and it's overwhelming.",
+        "My thoughts are scattered and racing, making it difficult to find clarity or direction in this moment.",
+        "This situation is stressing me out—I wish I could take a breath and escape for a while.",
+        "My brain feels overworked, like I'm juggling too many things at once and dropping the ball."
+    ],
+    'Relaxed': [
+        "I'm feeling peaceful and relaxed, as if I'm lying under a tree on a warm day with no worries at all.",
+        "Everything is calm and easy right now, and my mind is just gently drifting without tension.",
+        "My mind is at ease, thoughts flowing slowly like a quiet river, bringing comfort with every moment.",
+        "This is such a chill moment—I feel grounded, present, and free from any kind of stress or urgency.",
+        "I feel mentally light, like I'm floating in a bubble of calm where nothing can disturb me."
+    ]
+}
+
+    thought_options = thought_map.get(mental_state, ["I'm feeling neutral."])
+    thought = random.choice(thought_options)
+
+
+    return jsonify({
+        'mental_state': mental_state,
+        'freq_band': freq_input 
+    })
+
+
+if __name__ == '__main__':
+   
+    app.run(debug=False)
+
+about.html
+
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>About - NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    .hero { 
+      text-align: center;
+      padding: 25px 15px;
+      color: rgb(13, 13, 13);
+    }
+
+    .hero h1 {
+      font-size: 3rem;
+      font-family: 'Audiowide', cursive;
+      margin-bottom: 18px;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 0.5s;
+    }
+
+    .hero p {
+      font-size: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 1.2s;
+    }
+
+    @keyframes fadeSlideUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 15px 8px;
+    }
+
+  
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>  
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+      <a href="register.html">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>About NeuroPlay</h1>
+    <p>NeuroPlay is a pioneering platform focused on making technology accessible for individuals with disabilities through Brain-Computer Interface (BCI) and AI. We combine innovation and compassion to build tools for better communication, entertainment, and safety.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Our Vision</h3>
+      <p>To empower people of all abilities through inclusive technology that understands and adapts to human needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Our Mission</h3>
+      <p>To provide engaging tools that help people connect, express, and thrive using BCI-powered applications.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Meet the Team</h3>
+      <p>We are a group of tech enthusiasts, designers, and social changemakers who believe in building for everyone.</p>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>What We Do</h3>
+      <p>We develop brain-signal-based applications such as communication aids, smart home controls, and adaptive games that can be used hands-free using brainwave patterns.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Why NeuroPlay?</h3>
+      <p>Because everyone deserves access to technology that works for them—our platform is designed to be intuitive, inclusive, and adaptable to different needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Our Values</h3>
+      <p>Accessibility, Empathy, Innovation, Collaboration — these guide everything we build and how we engage with the world.</p>
+    </div>
+  </section>
+
+  <section class="hero">
+    <h1>Our Journey</h1>
+    <p>Here’s how NeuroPlay evolved into a mission-driven platform:</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>2025 - Idea Born</h3>
+      <p>Inspired by a school project on assistive technologies, our team came together with a shared purpose: bridging tech and humanity.</p>
+    </div>
+    <div class="feature-card">
+      <h3>2025 - First Prototype</h3>
+      <p>We launched our first BCI-powered game, tested by volunteers from accessibility communities across the region.</p>
+    </div>
+    <div class="feature-card">
+      <h3>2025 - Platform Expansion</h3>
+      <p>We're working on adding emotion recognition, home automation features, and real-time neurofeedback for users with mobility impairments.</p>
+    </div>
+  </section>
+
+  <section class="hero">
+    <h1>User Stories</h1>
+    <p>Real stories from users who have benefited from NeuroPlay:</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Riya, 12 (India)</h3>
+      <p>"With NeuroPlay, I could play a game with just my thoughts! It felt like magic."</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mark, 30 (Canada)</h3>
+      <p>"I use NeuroPlay's home control system daily. It's a game-changer for someone like me with limited mobility."</p>
+    </div>
+    <div class="feature-card">
+      <h3>Dr. Akash Mehta</h3>
+      <p>"Their platform is not just innovative, it’s compassionate. A perfect blend of neuroscience and humanity."</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Want to learn more?</h2>
+    <p>Contact us to explore partnerships, feedback, or volunteering!</p>
+    <a href="{{ url_for('contact') }}">Reach Out</a>
+  </section>
+</body>
+</html>
+
+contact.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Contact - NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+ }
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .contact-wrapper {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 20px 20px;
+      gap: 30px;
+    }
+
+    .contact-form {
+      flex: 1;
+      min-width: 300px;
+      max-width: 550px;
+      background: #fff;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.1);
+      border: 3px solid #0f4c81;
+    }
+
+    .contact-form h2 {
+      margin-bottom: 20px;
+      color: #0f4c81;
+      font-family: 'Audiowide', cursive;
+    }
+
+    .contact-form input,
+    .contact-form textarea {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      transition: 0.3s ease;
+      font-size: 16px;
+    }
+
+    .contact-form button {
+      background: #0f4c81;
+      color: white;
+      padding: 12px 25px;
+      border: none;
+      border-radius: 10px;
+      font-weight: bold;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .contact-form button:hover {
+      background-color: #34c2d6;
+    }
+
+    .contact-info {
+      flex: 1;
+      min-width: 300px;
+      max-width: 450px;
+      padding: 20px;
+      background: #0f4c81;
+      color: white;
+      border-radius: 15px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .contact-info h3 {
+      font-size: 22px;
+      margin-bottom: 20px;
+      font-family: 'Audiowide', cursive;
+    }
+
+    .contact-info p {
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+
+    .contact-info i {
+      margin-right: 10px;
+      color: #34c2d6;
+    }
+
+
+    .map-container {
+      max-width: 1030px;
+      margin: 0px auto 25px auto;
+      border: 5px solid #0f4c81;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    footer {
+      background-color: #0f4c81;
+      color: white;
+      text-align: center;
+      padding: 15px 0;
+      font-size: 14px;
+    }
+
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <img src="filename=brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+    <a href="home.html">Home</a>  
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+      <a href="register.html">Register / Login</a>
+    </nav>
+  </header>
+
+  <section style="text-align: center; padding: 35px 15px; transition: 2s ease-out; opacity: 0; animation: fadeIn 2s forwards;">
+    <h1 style="font-size: 36px; color: #0f4c81; font-family: 'Audiowide', cursive; margin-bottom: 10px; transition: 2s ease-out; opacity: 0; animation: slideUp 1s forwards;">
+      Connect With Us
+    </h1>
+    <p style="font-size: 18px; color: #333;padding-top: 10px; max-width: 800px; margin: 0px auto; opacity: 0; animation: fadeIn 2s forwards 1s;">
+      Have a question, suggestion, or just want to say hello? We’d love to hear from you!
+      Fill out the form below and our team will get back to you as soon as possible.
+    </p>
+</section>
+
+
+  <div class="contact-wrapper">
+    <div class="contact-form">
+      <h2>Get in Touch</h2>
+      <form onsubmit="return handleSubmit(event)">
+        <input type="text" name="name" placeholder="Your Name" required />
+        <input type="email" name="email" placeholder="Your Email" required />
+        <textarea name="message" rows="5" placeholder="Your Message" required></textarea>
+        <button type="submit">Send Message</button>
+      </form>
+    </div>
+
+    <div class="contact-info">
+      <h3>Contact Information</h3>
+      <p><i class="fas fa-map-marker-alt"></i> 123 Neuro St, Innovation City</p>
+      <p><i class="fas fa-envelope"></i> support@neuroplay.ai</p>
+      <p><i class="fas fa-phone-alt"></i> +1 (123) 456-7890</p>
+    </div>
+  </div>
+
+  <div class="map-container">
+    <iframe
+      src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3153.170067721729!2d-122.40641708468182!3d37.785834979756154!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x80858064fcbfbf27%3A0xdeadbeef12345678!2sYour+Location+Here!5e0!3m2!1sen!2sus!4v1685555555555"
+      allowfullscreen=""
+      loading="lazy"
+      referrerpolicy="no-referrer-when-downgrade">
+    </iframe>
+  </div>
+  
+  <footer>
+    &copy; 2025 NeuroPlay. All rights reserved.
+  </footer>
+  
+
+</body>
+</html>
+
+dashboard.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .dashboard {
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  padding: 30px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+.card {
+  background-color: white;
+  border: 2px solid #000;
+  border-radius: 10px;
+  overflow: hidden;
+  text-align: center;
+  height: 273px; /* You can adjust this height as needed */
+  position: relative;
+  box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.card img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+
+.image-container img {
+  width: 100%;
+  height: 100%;
+}
+
+.username{
+  padding: 15px 15px 0 15px; 
+  font-size: 23px; 
+  margin-bottom: 0; 
+  opacity: 0;
+  transform: translateY(30px);
+  animation: fadeSlideUp 1s ease-out forwards;
+  animation-delay: 0.5s;
+}
+
+.username strong{
+  font-family: 'Audiowide', cursive;
+  color: #0f4c81;
+}
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src=" filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+    </nav>
+  </header>
+
+  <div class="username">
+    Hello, <strong>{{ username }}</strong> ! Welcome back to NeuroPlay.
+  </div>  
+   
+
+  <main class="dashboard">
+    <div class="card">
+      <h3>Maze Game</h3>
+      <div class="image-container">
+        <a href="game">
+      <img src="filename='maze.jpg'" alt="Maze Game" />
+      </a>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Thought-to-Speech</h3>
+      <div class="image-container">
+      <a href="speech">
+      <img src=" filename='text.jpg'" alt="Speech Brain" />
+      </a>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Emotion-based Music</h3>
+      <div class="image-container">
+      <img src="filename='music.jpg'" alt="Music Brain" />
+      </div>
+    </div>
+    <div class="card">
+      <h3>Virtual Pet</h3>
+      <div class="image-container">
+      <img src="filename='pet.jpg'" alt="Pink Pet" />
+      </div>
+    </div>
+  </main>
+  
+</body>
+</html>
+
+game.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Maze Game</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+    }
+   
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+.game-container {
+  display: flex;
+  height: 91vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 350px;
+  height: 100%; 
+  background: #ffffff;
+  border-right: 2px solid #ddd;
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.1);
+  padding: 28px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar button {
+  border: none;
+  border-radius: 8px;
+  background: rgb(15, 88, 189);
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.3s ease;
+}
+.sidebar .help{
+    background: limegreen;
+    color: white;
+}
+
+.sidebar .buy{
+    background: rgb(252, 218, 25);
+    padding: 10px;
+    margin-bottom: 25px;
+} 
+.timer {
+  margin-top: 5px;
+  line-height: 2;
+  font-weight: bold;
+}
+
+.score{
+    margin: 0px 20px;
+    font-weight: bold;
+    text-align: center;
+    font-size: 20px;
+    padding: 10px;
+    border-radius: 10px;
+    background-color: rgb(255, 128, 0);
+}
+.shieldsc{
+    font-weight: bold;
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+.sections .diff{
+    font-weight: bold;
+}
+.section select {
+  margin-top: 15px;
+  width: 100%;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  margin-bottom: 25px;
+  background: red;
+}
+
+.leaderboard h2 {
+  font-weight: bold;
+  font-size: 18px;
+  margin-bottom: 18px;
+}
+
+.playerlead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border-radius: 25px;
+  margin-bottom: 10px;
+  border: 2px solid rgb(152, 151, 151);
+  box-shadow: #444;
+  font-weight: bold;
+  gap: 8%;
+  background: #00abc2;
+  transition: all 0.3s ease;
+}
+    .maze-display {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      overflow: auto;
+    }
+    .wall {
+      background-color: black;
+    }
+
+    .goal {
+      background-color: rgb(0, 255, 34);
+    }
+    .player{
+        background-color: rgb(60, 188, 238);
+    }
+
+    button, select {
+     width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+    }
+
+
+    .obstacle {
+      background-color: rgb(255, 0, 0);
+    }
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+    </nav>
+  </header>
+
+  <div class="game-container">
+    <div class="sidebar">
+      <div class="stats-group">
+        <div class="score">Score: <span id="score">0</span></div>
+        <div class="timer">Timer: <span id="timer">60</span> sec</div>
+        <div class="timer-bar">
+            <div id="timer-fill"></div>
+          </div>
+        <div class="shieldsc">Shields: <span id="shields">1</span></div>
+        <div class="section">
+            <button onclick="buyShield()" class="buy">🛡️ Buy Shield (-20 points)</button>
+            </div>
+      </div>
+      <div class="sections">
+        <label for="difficulty" class="diff">Difficulty Level:</label>
+        <select id="difficulty">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+      </div>
+      <div class="sectionrows">
+        <button onclick="startGame()">▶️ Play</button>
+        <button onclick="showHelp()" class="help">❓ Help</button>
+      </div>
+      <div class="leaderboard">
+        <h2>Leaderboard</h2>
+        <div class="playerlead">
+          <img src="filename='gold.png'" alt="P1">
+          <span>Neuroplayer - 120</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="maze-display">
+      <div class="maze-grid" id="maze"></div>
+    </div>
+  </div>
+
+  <script>
+let maze = document.getElementById('maze');
+let playerPos = { x: 1, y: 1 };
+let score = 0;
+let shields = 1;
+let timerInterval;
+let timeLeft = 60;
+let mazeData = [];
+let movesQueue = [];
+let currentMoveIndex = 0;
+    
+    
+    const easyMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,1,0,0,0,0,1,0,0,0,1],
+  [1,0,1,0,1,0,1,1,0,1,0,1,0,1],
+  [1,0,1,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,4,0,1,0,1,0,1,0,0,0,1],
+  [1,1,1,1,0,0,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+    
+const mediumMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,3,1,0,0,0,0,1,0,0,0,1],
+  [1,0,1,0,1,3,1,1,0,1,0,1,0,1],
+  [1,0,1,0,0,0,0,1,3,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,4,0,1,0,1,0,1,0,0,0,1],
+  [1,1,1,1,0,3,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+const hardMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,3,0,1,0,3,0,0,1,0,3,0,1],
+  [1,0,1,0,1,3,1,1,3,1,0,1,0,1],
+  [1,3,1,0,0,0,0,1,3,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,3,4,0,1,3,1,0,1,0,0,0,1],
+  [1,1,1,1,0,3,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+
+    
+    function getMazeAndTime() {
+      const difficulty = document.getElementById('difficulty').value;
+      if (difficulty === 'easy') return { data: easyMaze, time: 60 };
+      if (difficulty === 'medium') return { data: mediumMaze, time: 45 };
+      if (difficulty === 'hard') return { data: hardMaze, time: 30 };
+    }
+  
+    
+    function movePlayer(dx, dy) {
+      const newX = playerPos.x + dx;
+      const newY = playerPos.y + dy;
+      const target = mazeData[newY][newX];
+    
+      if (target !== 1) {
+        if (target === 3) {
+          if (shields > 0) {
+            shields--;
+            wallSound?.play()
+            alert("🛡️ Shield used! You are safe.");
+          } else {
+            score -= 10;
+            timeLeft -= 5;
+            alert("🚫 Obstacle! -10 points, -5 sec.");
+          }
+        } else if (target === 4) {
+          shields++;
+          mazeData[newY][newX] = 0;
+          shieldsound?.play();
+          alert("✨ Shield Collected! +1 shield.");
+        } else {
+          score += 5;
+        }
+    
+        playerPos = { x: newX, y: newY };
+        updateStats();
+        renderMaze();
+    
+        if (target === 2) {
+          clearInterval(timerInterval);
+          winSound?.play();
+          setTimeout(() => {
+            alert(`✅ you won 🥳🥳 🏁 Goal reached!\nScore: ${score}`);
+            updateLeaderboard(score);
+          }, 200);
+        }
+    
+        moveSound?.play();
+      } else {
+        wallSound?.play();
+      }
+    }
+    
+    function buyShield() {
+      if (score >= 20) {
+        score -= 20;
+        shields++;
+        alert("🛡️ Shield bought! -20 points.");
+        updateStats();
+      } else {
+        alert("❌ Not enough points to buy a shield.");
+      }
+    
+  }
+
+  function startGame() {
+  initSounds();
+  const { data, time } = getMazeAndTime();
+  mazeData = data.map(row => [...row]);
+  timeLeft = time;
+  const totalTime = time; // Store total time for progress calculation
+  score = 0;
+  shields = 1;
+  playerPos = { x: 1, y: 1 };
+  updateStats();
+  renderMaze();
+
+  const timerFill = document.getElementById('timer-fill');
+  timerFill.style.width = '100%';
+  timerFill.style.backgroundColor = 'limegreen';
+
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    timeLeft--;
+    document.getElementById('timer').innerText = timeLeft;
+
+    const percentage = (timeLeft / totalTime) * 100;
+    timerFill.style.width = percentage + '%';
+
+
+    if (timeLeft <= 15) {
+    timerSound.play();
+    timerSound.play();
+  }
+
+    if (timeLeft <= 0) {
+      clearInterval(timerInterval);
+      alert(`⏰ Time's up!\nScore: ${score}`);
+      updateLeaderboard(score);
+    }
+  }, 1000);
+  }
+
+function fetchNextMove() {
+  fetch('/next_move', {
+    method: 'GET'
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.status === "done") {
+      return;
+    }
+
+    const { mental_state, move } = data;
+
+    switch (mental_state) {
+      case "Concentrated":
+        console.log(`🧠 ${mental_state}: Performing move ${move}`);
+        applyMove(move);
+        // alert(`🧠 Action detected. Performing move: ${move}.`);
+        break;
+
+      case "Relaxed":
+        alert("🧘 You're relaxed. Try focusing more to proceed.");
+        break;
+
+      case "Stressed":
+        alert("⚠️ You're stressed. Take a deep breath before continuing.");
+        break;
+
+      default:
+        alert("Unknown state. Please try again.");
+    }
+
+  });
+}
+
+
+    function showHelp() {
+      alert("🔼🔽◀️▶️ Use arrow keys to move.\n🛡️ Avoid or use shield on obstacles.\n✨ Collect shield bonuses.\n🏁 Reach the goal before time runs out.");
+    }
+    
+let playerScores = [];
+
+function updateLeaderboard(finalScore) {
+  playerScores.push({ name: 'Neuroplayer', score: finalScore });
+
+  const leaderboard = document.querySelector('.leaderboard');
+
+   if (leaderboard) {
+  leaderboard.innerHTML = '<h2>Leaderboard</h2>';
+});
+}
+    
+    window.onload();
+    </script>
+    
+</body>
+</html>
+
+home.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .hero { 
+      text-align: center;
+      padding: 25px 15px;
+      color: rgb(13, 13, 13);
+    }
+
+    .hero h1 {
+      font-size: 3rem;
+      margin-left: 30%;
+      max-width: 610px;
+      margin-bottom: 18px;
+      opacity: 0;
+      transform: translateY(30px);
+    }
+
+    .hero p {
+      font-size: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+      opacity: 0;
+      transform: translateY(30px);
+    }
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 15px 8px;
+    }
+
+    .feature-card {
+      background-color: white;
+      width: 280px;
+      margin: 20px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    .feature-card h3 {
+      color: #0f4c81;
+      margin-bottom: 9px;
+    }
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+      <a href="register.html">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1><span class="typing">Welcome to NeuroPlay</span></h1>
+    <p>Empowering individuals with disabilities through Brain-Computer Interface and AI — explore games, music, voice interaction, and virtual companionship in one inclusive platform.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Face & Voice Login</h3>
+      <p>Secure and hands-free login experience using facial recognition and voice authentication.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Maze Game</h3>
+      <p>Enhance cognitive control with an interactive AI-powered maze game.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Thought to Speech</h3>
+      <p>Convert your thoughts into spoken words using neural interface technology.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mood-Based Music</h3>
+      <p>Let AI understand your emotions and play music that matches your mood.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Virtual Pet</h3>
+      <p>Get company from a smart, friendly virtual pet that adapts to your needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Smart Alerts</h3>
+      <p>Stay safe with real-time health and emergency alerts tailored for you.</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Start your journey with NeuroPlay</h2>
+    <p>Join us in making technology truly accessible.</p>
+    <a href="{{ url_for('register') }}">Get Started</a>
+  </section>
+
+</body>
+</html>
+
+login.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biometric Login</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #86dff8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 5px 30px;
+    }
+
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 22px 32px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+      margin-top: 30px; /* Prevent overlap with header */
+      margin-bottom: 30px;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #e5f0fc;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 11px;
+      border: 2px solid #b1b1b1;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 16px;
+      box-shadow: 0px 0px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    form button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+    .default-avatar {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .button-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .button-row button {
+      flex: 1;
+      white-space: nowrap;
+    }
+
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+    </nav>
+  </header>
+
+  <div class="form-wrapper">
+    <div class="tabs">
+      <div class="tab active" data-tab="faceLogin">Login / Face</div>
+      <div class="tab" data-tab="voiceLogin">Login / Voice</div>
+    </div>
+
+    <form id="faceLoginForm" method="POST" enctype="multipart/form-data" action="/login/face">
+      <div id="faceLogin" class="tab-content active">
+        <h2>Face Login</h2>
+        <input type="email" name="email" placeholder="Email" required pattern="[^@\s]+@[^@\s]+\.[^@\s]+"/>
+        <div class="camera-container">
+          <video id="loginFaceCam" autoplay muted></video>
+          <img id="loginFacePreview" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button type="button" onclick="captureLoginFace()">
+            <i class="fas fa-camera"></i> Capture Face
+          </button>          
+          <button type="button" class="retake-btn" onclick="retakeLoginFace()" id="retakeLoginBtn" style="display:none;">
+            <i class="fas fa-undo"></i> Retake
+          </button>
+        </div>
+        <input type="hidden" name="loginFaceImage" id="loginFaceImage" />
+        <br>
+        <button type="submit">Login</button>
+      </div>
+    </form>
+
+    <div style="text-align: center; margin-top: 20px;">
+      Don't have an account?
+      <a href="register.html" style="color: #0072ff; text-decoration: none; font-weight: bold;">
+        Register
+      </a>
+    </div>
+  </div>
+
+  <script>
+   
+    const loginVideo = document.getElementById('loginFaceCam');
+    const loginFacePreview = document.getElementById('loginFacePreview');
+    const loginFaceInput = document.getElementById('loginFaceImage');
+    const retakeLoginBtn = document.getElementById('retakeLoginBtn');
+
+
+    function captureLoginFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = loginVideo.videoWidth;
+      canvas.height = loginVideo.videoHeight;
+      loginFaceInput.value = imageData;
+      loginFacePreview.src = imageData;
+      loginFacePreview.style.display = 'block';
+      loginVideo.style.display = 'none';
+      retakeLoginBtn.style.display = 'inline-block';
+    }
+
+
+    function startVoiceLogin() {
+      document.getElementById('recordMessage').style.display = 'block';
+      document.getElementById('countdown').style.display = 'block';
+      document.getElementById('recordProgress').style.display = 'block';
+
+      const countdown = document.getElementById('countdown');
+      const progress = document.getElementById('recordProgress');
+
+      countdown.innerText = count;
+      progress.value = 0;
+
+      const interval = setInterval(() => {
+        countdown.innerText = count;
+        progress.value = 5 - count;
+        if (count <= 0) clearInterval(interval);
+      }, 1000);
+
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        let mediaRecorder = new MediaRecorder(stream);
+        let voiceChunks = [];
+
+        mediaRecorder.ondataavailable = e => voiceChunks.push(e.data);
+
+        mediaRecorder.start();
+        setTimeout(() => mediaRecorder.stop(), 5000);
+      });
+    }
+
+  </script>
+
+</body>
+</html>
+
+
+register.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biometric Registration</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #86dff8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 5px 30px;
+}
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 22px 32px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+      margin-top: 20px; 
+      margin-bottom: 25px;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #e5f0fc;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 11px;
+      border: 2px solid #b1b1b1;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 16px;
+      box-shadow: 0px 0px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    form button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    form button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+
+    progress {
+      width: 100%;
+      height: 15px;
+      border-radius: 10px;
+      margin-top: 10px;
+      appearance: none;
+    }
+
+    #recordMessage, #countdown {
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .button-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .button-row button {
+      flex: 1;
+      white-space: nowrap;
+    }
+
+    .voice-btn {
+      margin-bottom: 10px;
+ }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+    </nav>
+  </header>
+  
+  <div class="form-wrapper">
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('faceTab')">Register</div>
+      <div class="tab" onclick="showTab('voiceTab')">Register</div>
+    </div>
+
+    <form id="faceForm" method="POST" enctype="multipart/form-data" action="/register/face">
+      <div id="faceTab" class="tab-content active">
+        <h2>Face Registration</h2>
+        <input type="text" name="username" placeholder="Username" required />
+        <input type="email" name="email" placeholder="Email" required />
+        <div class="camera-container">
+          <video id="faceCam" autoplay muted playsinline></video>
+          <img id="facePreview" alt="Captured Face Preview" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button type="button" onclick="captureFace()">
+            <i class="fas fa-camera"></i> Capture Face
+          </button>
+          <button type="button" class="retake-btn" onclick="retakeFace()" id="retakeBtn" style="display:none;">
+            <i class="fas fa-undo"></i> Retake
+          </button>
+        </div>
+        <input type="hidden" name="faceImage" id="faceImage" />
+        <br>
+        <button type="submit">Register</button>
+      </div>
+    </form>
+
+    <div style="text-align: center; margin-top: 20px;">
+      Already have an account?
+      <a href="login.html" style="color: #0072ff; text-decoration: none; font-weight: bold;">
+        Login
+      </a>
+    </div>
+  </div>
+
+  <script>
+
+    const video = document.getElementById('faceCam');
+    const facePreview = document.getElementById('facePreview');
+    const faceInput = document.getElementById('faceImage');
+    const retakeBtn = document.getElementById('retakeBtn');
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(stream => {
+          video.srcObject = stream;
+        })
+       }
+
+    function captureFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 240;
+      faceInput.value = imageData;
+      facePreview.src = imageData;
+      facePreview.style.display = 'block';
+      video.style.display = 'none';
+      retakeBtn.style.display = 'inline-block';
+    }
+
+    let mediaRecorder;
+    let voiceChunks = [];
+
+    function startRecording() {
+      const recordMessage = document.getElementById('recordMessage');
+      const countdown = document.getElementById('countdown');
+      const progress = document.getElementById('recordProgress');
+      const voicePlayback = document.getElementById('voicePlayback');
+      const voiceData = document.getElementById('voiceData');
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          mediaRecorder = new MediaRecorder(stream);
+          voiceChunks = [];
+
+          mediaRecorder.ondataavailable = e => {
+            voiceChunks.push(e.data);
+          };
+
+
+  </script>
+
+</body>
+</html>
+
+speech.html
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Thought-to-Speech</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+}
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+
+    .main-content {
+      text-align: center;
+      padding: 45px 20px;
+    }
+
+    .main-content h1 {
+      font-size: 32px;
+      margin-bottom: 60px;
+      font-weight: bold;
+      color: #000;
+      font-family: 'Audiowide', cursive;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 0.3s;
+    }
+
+
+    .start-btn {
+      font-size: 20px;
+      background: linear-gradient(to right, #5fd3ff, #d491f0);
+      color: white;
+      font-weight: bold;
+      padding: 15px 30px;
+      border: none;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+      margin-bottom: 35px;
+    }
+
+    .feedback-box {
+      background-color: #ffffff;
+      margin: 35px auto;
+      padding: 30px;
+      max-width: 780px;
+      border-radius: 12px;
+      font-weight: bold;
+      font-size: 18px;
+      color: #333;
+      box-shadow: 3px 3px 10px rgba(0, 0, 0, 0.2);
+    }
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="filename='brain.png'" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="home.html">Home</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="about.html">About us</a>
+      <a href="contact.html">Contact us</a>
+    </nav>
+  </header>
+
+
+  <div class="main-content">
+    <h1>Thought - To - Speech Conversion</h1>
+    <button class="start-btn" id="start-btn">Start to Think</button>
+    
+    <div class="feedback-box" id="feedback-box">
+      Click the button to start the thought-to-speech process!
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("start-btn").addEventListener("click", function () {
+
+  document.getElementById('feedback-box').textContent = "Thinking...";
+
+  setTimeout(() => {
+    fetch('/get-thought', { method: 'POST' })
+      .then(response => response.json())
+      .then(data => {
+        const thought = data.thought;
+        document.getElementById('feedback-box').textContent = thought;
+      })
+      .catch(error => console.error('Error fetching thought:', error));
+  }, 1500); // 2 second delay
+});
+
+
+  </script>
+  
+</body>
+</html>
+
+

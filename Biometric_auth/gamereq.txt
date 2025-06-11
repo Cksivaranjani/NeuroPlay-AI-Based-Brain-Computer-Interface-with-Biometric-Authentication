@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Maze Game</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+.game-container {
+  display: flex;
+  height: 91vh; /* Full viewport height */
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 350px;
+  height: 100%; /* Full height */
+  background: #ffffff;
+  border-right: 2px solid #ddd;
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.1);
+  padding: 28px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar .sectionrow {
+  display: flex;
+  justify-content: space-between;
+  gap: 30px;
+  margin-bottom: 30px;
+}
+
+.sidebar button {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: rgb(15, 88, 189);
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.3s ease;
+}
+.sidebar .help{
+    background: limegreen;
+    color: white;
+}
+.sidebar button:hover {
+  background: rgb(52, 104, 177);
+}
+.sidebar .help:hover{
+    background: rgb(89, 233, 89);
+    color: white;
+}
+.sidebar .buy{
+    background: rgb(252, 218, 25);
+    padding: 10px;
+    margin-bottom: 25px;
+    width: 100%;
+    text-align: center;
+} 
+.sidebar .buy:hover{
+  background: rgb(247, 220, 70) ;
+}
+.stats-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px; 
+}
+.timer {
+  margin-top: 5px;
+  line-height: 2;
+  font-weight: bold;
+}
+.timer-bar {
+  height: 10px;
+  background-color: #eee;
+  border-radius: 5px;
+  overflow: hidden;
+  margin: 6px 0 10px;
+}
+
+#timer-fill {
+  height: 100%;
+  width: 100%;
+  background-color: limegreen;
+  transition: width 1s linear, background-color 0.3s ease;
+}
+.score{
+    margin: 0px 20px;
+    font-weight: bold;
+    text-align: center;
+    font-size: 20px;
+    padding: 10px;
+    border-radius: 10px;
+    background-color: rgb(255, 128, 0);
+}
+.shieldsec{
+    font-weight: bold;
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+.section .diff{
+    font-weight: bold;
+}
+.section select {
+  margin-top: 15px;
+  width: 100%;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  margin-bottom: 25px;
+  background: red;
+}
+
+.section select option{
+    background: white;
+    color: black;
+}
+
+.leaderboard h2 {
+  font-weight: bold;
+  font-size: 18px;
+  margin-bottom: 18px;
+}
+
+.playerlead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border-radius: 25px;
+  margin-bottom: 10px;
+  border: 2px solid rgb(152, 151, 151);
+  box-shadow: #444;
+  font-weight: bold;
+  gap: 8%;
+  background: #00abc2;
+  transition: all 0.3s ease;
+}
+.playerlead img {
+  width: 40px;
+  height: 40px;
+  vertical-align: middle;
+  margin-right: 10px;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+.playerlead span {
+  font-size: 17px;
+  color: #252525;
+}
+
+
+    .maze-display {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      overflow: auto;
+    }
+
+    .maze-grid {
+      display: grid;
+      grid-template-columns: repeat(14, 40px);
+      grid-template-rows: repeat(14, 40px);
+      gap: 2px;
+    }
+
+    .cell {
+      width: 40px;
+      height: 40px;
+      border: 1px solid #999;
+      background-color: white;
+      transition: all 0.2s ease;
+    }
+
+    .wall {
+      background-color: black;
+    }
+
+    @keyframes bounce {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); }
+    }
+
+    .goal {
+      background-color: rgb(0, 255, 34);
+    }
+    .player{
+        background-color: rgb(60, 188, 238);
+        animation: bounce 0.2s;
+    }
+
+    button, select {
+     width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .obstacle {
+      background-color: rgb(255, 0, 0);
+    }
+
+    .shield {
+  background-color: gold;
+  border: 2px solid #fff;
+}
+
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+    </nav>
+  </header>
+
+  <div id="flash-data" data-message="{{ get_flashed_messages()[0] if get_flashed_messages() else '' }}"></div>
+
+  <div class="game-container">
+    <div class="sidebar">
+      <div class="stats-group">
+        <div class="score">Score: <span id="score">0</span></div>
+        <div class="timer">Timer: <span id="timer">60</span> sec</div>
+        <div class="timer-bar">
+            <div id="timer-fill"></div>
+          </div>
+        <div class="shieldsec">Shields: <span id="shields">1</span></div>
+        <div class="section">
+            <button onclick="buyShield()" class="buy">🛡️ Buy Shield (-20 points)</button>
+            </div>
+      </div>
+      <div class="section">
+        <label for="difficulty" class="diff">Difficulty Level:</label>
+        <select id="difficulty">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+      </div>
+      <div class="sectionrow">
+        <button onclick="startGame()">▶️ Play</button>
+        <button onclick="showHelp()" class="help">❓ Help</button>
+      </div>
+      <div class="leaderboard">
+        <h2>Leaderboard</h2>
+        <div class="playerlead">
+          <img src="{{ url_for('static', filename='images/gold.png') }}" alt="P1">
+          <span>Neuroplayer - 120</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="maze-display">
+      <div class="maze-grid" id="maze"></div>
+    </div>
+  </div>
+
+  <script>
+    let maze = document.getElementById('maze');
+    let playerPos;
+    let score = 0;
+    let shields = 1;
+    let timerInterval;
+    let timeLeft = 60;
+    let mazeData = [];
+    
+    let moveSound, winSound, wallSound;
+    
+    function initSounds() {
+      moveSound = new Audio('https://cdn.pixabay.com/audio/2022/03/15/audio_46985e3a8c.mp3');
+      winSound = new Audio('https://cdn.pixabay.com/audio/2022/10/15/audio_9d0a001e1a.mp3');
+      wallSound = new Audio('https://cdn.pixabay.com/audio/2022/03/15/audio_7f2ac4a81e.mp3');
+    }
+    
+    const easyMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,1,0,0,0,0,1,0,0,0,1],
+  [1,0,1,0,1,0,1,1,0,1,0,1,0,1],
+  [1,0,1,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,4,0,1,0,1,0,1,0,0,0,1],
+  [1,1,1,1,0,0,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+    
+const mediumMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,3,1,0,0,0,0,1,0,0,0,1],
+  [1,0,1,0,1,3,1,1,0,1,0,1,0,1],
+  [1,0,1,0,0,0,0,1,3,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,4,0,1,0,1,0,1,0,0,0,1],
+  [1,1,1,1,0,3,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+const hardMaze = [ 
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,3,0,1,0,3,0,0,1,0,3,0,1],
+  [1,0,1,0,1,3,1,1,3,1,0,1,0,1],
+  [1,3,1,0,0,0,0,1,3,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,3,4,0,1,3,1,0,1,0,0,0,1],
+  [1,1,1,1,0,3,0,1,0,1,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,1],
+  [1,0,1,1,1,1,1,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,0,1,0,1,0,1,0,1],
+  [1,0,1,1,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,1,0,0,0,1,0,1,0,1],
+  [1,1,1,1,0,1,1,1,1,1,0,2,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+
+    
+    function getMazeAndTime() {
+      const difficulty = document.getElementById('difficulty').value;
+      if (difficulty === 'easy') return { data: easyMaze, time: 60 };
+      if (difficulty === 'medium') return { data: mediumMaze, time: 45 };
+      if (difficulty === 'hard') return { data: hardMaze, time: 30 };
+    }
+    
+    function renderMaze() {
+      maze.innerHTML = '';
+      for (let y = 0; y < mazeData.length; y++) {
+        for (let x = 0; x < mazeData[y].length; x++) {
+          const cell = document.createElement('div');
+          cell.classList.add('cell');
+          if (mazeData[y][x] === 1) cell.classList.add('wall');
+          if (mazeData[y][x] === 2) cell.classList.add('goal');
+          if (mazeData[y][x] === 3) cell.classList.add('obstacle');
+          if (mazeData[y][x] === 4) cell.classList.add('shield');
+          if (playerPos.x === x && playerPos.y === y) cell.classList.add('player');
+          maze.appendChild(cell);
+        }
+      }
+    }
+    
+    function updateStats() {
+      document.getElementById('score').innerText = score;
+      document.getElementById('shields').innerText = shields;
+      document.getElementById('timer').innerText = timeLeft;
+    }
+    
+    function movePlayer(dx, dy) {
+      const newX = playerPos.x + dx;
+      const newY = playerPos.y + dy;
+      const target = mazeData[newY][newX];
+    
+      if (target !== 1) {
+        if (target === 3) {
+          if (shields > 0) {
+            shields--;
+            alert("🛡️ Shield used! You are safe.");
+          } else {
+            score -= 10;
+            timeLeft -= 5;
+            alert("🚫 Obstacle! -10 points, -5 sec.");
+          }
+        } else if (target === 4) {
+          shields++;
+          mazeData[newY][newX] = 0;
+          alert("✨ Shield Collected! +1 shield.");
+        } else {
+          score += 5;
+        }
+    
+        playerPos = { x: newX, y: newY };
+        updateStats();
+        renderMaze();
+    
+        if (target === 2) {
+          clearInterval(timerInterval);
+          winSound?.play();
+          setTimeout(() => {
+            alert(`you won 🥳🥳 🏁 Goal reached!\nScore: ${score}`);
+            updateLeaderboard(score);
+          }, 200);
+        }
+    
+        moveSound?.play();
+      } else {
+        wallSound?.play();
+      }
+    }
+    
+    function buyShield() {
+      if (score >= 20) {
+        score -= 20;
+        shields++;
+        alert("🛡️ Shield bought! -20 points.");
+        updateStats();
+      } else {
+        alert("❌ Not enough points to buy a shield.");
+      }
+    }
+    
+    function startGame() {
+  initSounds();
+  const { data, time } = getMazeAndTime();
+  mazeData = data.map(row => [...row]);
+  timeLeft = time;
+  const totalTime = time; // Store total time for progress calculation
+  score = 0;
+  shields = 1;
+  playerPos = { x: 1, y: 1 };
+  updateStats();
+  renderMaze();
+
+  // Reset progress bar
+  const timerFill = document.getElementById('timer-fill');
+  timerFill.style.width = '100%';
+  timerFill.style.backgroundColor = 'limegreen';
+
+  clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    timeLeft--;
+    document.getElementById('timer').innerText = timeLeft;
+
+    // Update progress bar width
+    const percentage = (timeLeft / totalTime) * 100;
+    timerFill.style.width = percentage + '%';
+
+    // Optional: Change color based on time left
+    if (percentage <= 25) {
+      timerFill.style.backgroundColor = 'red';
+    } else if (percentage <= 50) {
+      timerFill.style.backgroundColor = 'orange';
+    } else {
+      timerFill.style.backgroundColor = 'limegreen';
+    }
+
+    if (timeLeft <= 0) {
+      clearInterval(timerInterval);
+      alert(`⏰ Time's up!\nScore: ${score}`);
+      updateLeaderboard(score);
+    }
+  }, 1000);
+}
+
+    
+    function showHelp() {
+      alert("🔼🔽◀️▶️ Use arrow keys to move.\n🛡️ Avoid or use shield on obstacles.\n✨ Collect shield bonuses.\n🏁 Reach the goal before time runs out.");
+    }
+    
+    // Keep an array to track all players and their scores
+let playerScores = [];
+
+function updateLeaderboard(finalScore) {
+  // Add the new score
+  playerScores.push({ name: 'Neuroplayer', score: finalScore });
+
+  // Sort the array in descending order by score
+  playerScores.sort((a, b) => b.score - a.score);
+
+  // Get the top 3 players
+  const topThree = playerScores.slice(0, 3);
+
+
+  const leaderboard = document.querySelector('.leaderboard');
+
+   // Select the leaderboard container
+   if (leaderboard) {
+  leaderboard.innerHTML = '<h2>Leaderboard</h2>';
+  // ...
+}
+
+ // Trophy image filenames for 1st, 2nd, 3rd
+ const trophies = [
+    "{{ url_for('static', filename='images/gold.png') }}",
+    "{{ url_for('static', filename='images/silver.png') }}",
+    "{{ url_for('static', filename='images/bronze.png') }}"
+  ];
+
+// Add top 3 players with respective trophies
+topThree.forEach((player, index) => {
+  const playerDiv = document.createElement('div');
+  playerDiv.className = 'playerlead';
+  playerDiv.innerHTML = `
+    <img src="${trophies[index]}" alt="Rank ${index + 1}">
+    <span> Rank ${index + 1} - ${player.name} - ${player.score} </span>
+  `;
+  leaderboard.appendChild(playerDiv);
+});
+}
+
+    
+    document.addEventListener('keydown', e => {
+      switch (e.key) {
+        case 'ArrowUp': movePlayer(0, -1); break;
+        case 'ArrowDown': movePlayer(0, 1); break;
+        case 'ArrowLeft': movePlayer(-1, 0); break;
+        case 'ArrowRight': movePlayer(1, 0); break;
+      }
+    });
+
+    const flashDiv = document.getElementById('flash-data');
+    const message = flashDiv.dataset.message;
+    if (message) {
+      alert(message);
+    }
+    
+    window.onload = () => {
+      startGame();
+    };
+    </script>
+    
+</body>
+</html>
+
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_session import Session
+from psycopg2 import OperationalError
+from sqlalchemy import PickleType
+from werkzeug.utils import secure_filename
+
+import base64
+import os
+import uuid
+import cv2
+import numpy as np
+from pydub import AudioSegment
+import io
+from deepface import DeepFace
+from resemblyzer import VoiceEncoder, preprocess_wav
+from numpy import dot
+from numpy.linalg import norm
+
+# ---------- App Configuration ----------
+app = Flask(__name__)
+app.secret_key = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:Siva%40123@localhost:5432/biometrics'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SESSION_TYPE'] = 'filesystem'
+
+Session(app)
+db = SQLAlchemy(app)
+
+# ---------- Resemblyzer Voice Encoder ----------
+voice_encoder = VoiceEncoder()
+
+# ---------- Database Model ----------
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    face_embedding = db.Column(PickleType, nullable=True)
+    voice_embedding = db.Column(PickleType, nullable=True)
+
+# ---------- Helper Functions ----------
+def extract_face_embedding(image_path):
+    try:
+        obj = DeepFace.represent(img_path=image_path, model_name='VGG-Face', enforce_detection=False)
+        embedding = np.array(obj[0]['embedding'])
+        return embedding
+    except Exception as e:
+        print(f"❌ Face embedding error: {e}")
+        return None
+
+def extract_voice_embedding(audio_path):
+    try:
+        wav = preprocess_wav(audio_path)
+        embedding = voice_encoder.embed_utterance(wav)
+        print(f"✅ Voice embedding generated. Length: {len(embedding)}")
+        return embedding
+    except Exception as e:
+        print("❌ Resemblyzer voice processing error:", e)
+        return None
+
+def is_match(embedding1, embedding2, threshold=0.6):
+    if embedding1 is None or embedding2 is None:
+        return False
+
+    embedding1 = np.array(embedding1).flatten()
+    embedding2 = np.array(embedding2).flatten()
+
+    if np.isnan(embedding1).any() or np.isnan(embedding2).any():
+        return False
+
+    similarity = dot(embedding1, embedding2) / (norm(embedding1) * norm(embedding2))
+    print(f"🔍 Voice similarity: {similarity}")
+
+    return similarity > (1 - threshold)
+
+def save_image(data_url, folder='static/faces'):
+    os.makedirs(folder, exist_ok=True)
+    encoded_data = data_url.split(',')[1]
+    img_data = base64.b64decode(encoded_data)
+    filename = f"{uuid.uuid4()}.png"
+    filepath = os.path.join(folder, filename)
+    with open(filepath, 'wb') as f:
+        f.write(img_data)
+    return filepath
+
+def save_audio_file(file_data, folder='static/voices'):
+    os.makedirs(folder, exist_ok=True)
+    filename = f"{uuid.uuid4()}.wav"
+    filepath = os.path.join(folder, filename)
+
+    try:
+        audio = AudioSegment.from_file(io.BytesIO(file_data), format="webm")
+        audio.export(filepath, format="wav")
+    except Exception as e:
+        print(f"❌ Audio error: {e}")
+        return None
+
+    return filepath
+
+# ---------- Routes ----------
+@app.route('/')
+def home():
+    return render_template('home.html')
+
+@app.route('/login')
+def login():
+    return render_template('login.html')  # Page with face and voice login buttons
+
+@app.route('/register')
+def register():
+    return render_template('register.html')  # Page with face and voice login buttons
+
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/game')
+def game():
+    return render_template('game.html')
+
+@app.route('/about')
+def about():
+    return render_template('about.html')
+
+@app.route('/contact')
+def contact():
+    return render_template('contact.html')
+
+# -------------------- REGISTER --------------------
+
+@app.route('/register/face', methods=['GET', 'POST'])
+def register_face():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        face_data = request.form['faceImage']
+
+        if User.query.filter_by(email=email).first():
+            flash('Email already exists!')
+            print(f"❌ Registration failed: Email {email} already exists.")
+            return redirect(url_for('register'))
+
+        face_path = save_image(face_data)
+        face_embedding = extract_face_embedding(face_path)
+        os.remove(face_path)
+
+        if face_embedding is None or np.any(np.isnan(face_embedding)):
+            flash('Failed to extract face embedding.')
+            print(f"❌ Registration failed: Face embedding extraction failed for {email}.")
+            return redirect(url_for('register'))
+
+        new_user = User(username=username, email=email, face_embedding=face_embedding, voice_embedding=[])
+        db.session.add(new_user)
+        db.session.commit()
+
+        flash('Face registration successful!')
+        print(f"✅ Face registration successful for {email}.")
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+@app.route('/register/voice', methods=['GET', 'POST'])
+def register_voice():
+    if request.method == 'POST':
+        username = request.form['voiceUsername']
+        email = request.form['voiceEmail']
+        voice_data = request.form['voiceData']
+
+        if User.query.filter_by(email=email).first():
+            flash('Email already exists!')
+            print(f"❌ Registration failed: Email {email} already exists.")
+            return redirect(url_for('register'))
+
+        try:
+            voice_binary = base64.b64decode(voice_data.split(',')[1])
+        except Exception:
+            flash('Invalid voice data format.')
+            print(f"❌ Registration failed: Invalid voice data format for {email}.")
+            return redirect(url_for('register'))
+
+        voice_path = save_audio_file(voice_binary)
+        voice_embedding = extract_voice_embedding(voice_path)
+        os.remove(voice_path)
+
+        if voice_embedding is None or np.any(np.isnan(voice_embedding)):
+            flash('Failed to extract voice embedding.')
+            print(f"❌ Registration failed: Voice embedding extraction failed for {email}.")
+            return redirect(url_for('register'))
+
+        new_user = User(username=username, email=email, face_embedding=[], voice_embedding=voice_embedding)
+        db.session.add(new_user)
+        db.session.commit()
+
+        flash('Voice registration successful!')
+        print(f"✅ Voice registration successful for {email}.")
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+
+
+
+# -------------------- LOGIN --------------------
+
+@app.route('/login/face', methods=['GET', 'POST']) 
+def login_face():
+    if request.method == 'POST':
+        email = request.form['email']
+        face_data = request.form['loginFaceImage']
+        print(f"📨 Received face login request for: {email}")
+
+        user = User.query.filter_by(email=email).first()
+        if not user or user.face_embedding is None or len(user.face_embedding) == 0:
+            print("⚠️ User not found or face embedding not registered.")
+            flash('User not found or face data not registered.')
+            return redirect(url_for('login'))
+
+        face_path = save_image(face_data)
+        print(f"📸 Face image saved temporarily at: {face_path}")
+
+        input_embedding = extract_face_embedding(face_path)
+        os.remove(face_path)
+        print("🧹 Temporary face image deleted.")
+
+        if input_embedding is None:
+            print("❌ Failed to extract face embedding.")
+            flash('Failed to extract face embedding.')
+            return redirect(url_for('login'))
+
+        face_match = is_match(input_embedding, user.face_embedding)
+        if face_match:
+            print(f"✅ Face match successful for: {email}")
+        else:
+            print(f"❌ Face match failed for: {email}")
+
+        if face_match:
+            session['email'] = user.email
+            flash('Face login successful!')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Face login failed.')
+            return redirect(url_for('login_face'))
+
+    return render_template('login.html')
+
+
+@app.route('/login/voice', methods=['GET', 'POST'])
+def login_voice():
+    if request.method == 'POST':
+        email = request.form['voiceEmail']
+        voice_data = request.form['voiceLoginData']
+        print(f"📨 Received voice login request for: {email}")
+
+        user = User.query.filter_by(email=email).first()
+        if user is None or user.voice_embedding is None or len(user.voice_embedding) == 0:
+            print("⚠️ User not found or voice embedding not registered.")
+            flash('User not found or voice data not registered.')
+            return redirect(url_for('login'))
+
+        try:
+            voice_binary = base64.b64decode(voice_data.split(',')[1])
+            print("🎤 Voice data decoded successfully.")
+        except Exception as e:
+            print(f"❌ Error decoding voice data: {e}")
+            flash('Invalid voice data format.')
+            return redirect(url_for('login'))
+
+        voice_path = save_audio_file(voice_binary)
+        print(f"🎧 Voice audio saved temporarily at: {voice_path}")
+
+        input_embedding = extract_voice_embedding(voice_path)
+        os.remove(voice_path)
+        print("🧹 Temporary voice file deleted.")
+
+        if input_embedding is None:
+            print("❌ Failed to extract voice embedding.")
+            flash('Failed to extract voice embedding.')
+            return redirect(url_for('login'))
+
+        voice_match = is_match(input_embedding, user.voice_embedding, threshold=0.6)
+        if voice_match:
+            print(f"✅ Voice match successful for: {email}")
+        else:
+            print(f"❌ Voice match failed for: {email}")
+
+        if voice_match:
+            session['email'] = user.email
+            flash('Voice login successful!')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Voice login failed.')
+            return redirect(url_for('login'))
+
+    return render_template('login.html')
+
+
+# ---------- Run App ----------
+if __name__ == '__main__':
+    with app.app_context():
+        try:
+            db.create_all()
+            print("✅ Database initialized successfully!")
+        except OperationalError as e:
+            print(f"❌ Database connection failed: {e}")
+
+    app.run(debug=True, use_reloader=False)
