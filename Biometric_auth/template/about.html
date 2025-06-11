@@ -1,0 +1,237 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>About - NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .hero { 
+      text-align: center;
+      padding: 25px 15px;
+      color: rgb(13, 13, 13);
+    }
+
+    .hero h1 {
+      font-size: 3rem;
+      font-family: 'Audiowide', cursive;
+      margin-bottom: 18px;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 0.5s;
+    }
+
+    .hero p {
+      font-size: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 1.2s;
+    }
+
+    @keyframes fadeSlideUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 15px 8px;
+    }
+
+    .feature-card {
+      background-color: white;
+      width: 280px;
+      margin: 20px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    .feature-card h3 {
+      color: #0f4c81;
+      margin-bottom: 9px;
+    }
+
+    .cta {
+      text-align: center;
+      padding: 10px 5px;
+      background: #0f4c81;
+      color: white;
+    }
+
+    .cta a {
+      display: inline-block;
+      margin-top: 15px;
+      background-color: white;
+      color: #0f4c81;
+      font-weight: bold;
+      padding: 8px 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.3s;
+    }
+
+    .cta a:hover {
+      background-color: #ddd;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>  
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+      <a href="{{ url_for('register') }}">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1>About NeuroPlay</h1>
+    <p>NeuroPlay is a pioneering platform focused on making technology accessible for individuals with disabilities through Brain-Computer Interface (BCI) and AI. We combine innovation and compassion to build tools for better communication, entertainment, and safety.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Our Vision</h3>
+      <p>To empower people of all abilities through inclusive technology that understands and adapts to human needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Our Mission</h3>
+      <p>To provide engaging tools that help people connect, express, and thrive using BCI-powered applications.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Meet the Team</h3>
+      <p>We are a group of tech enthusiasts, designers, and social changemakers who believe in building for everyone.</p>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>What We Do</h3>
+      <p>We develop brain-signal-based applications such as communication aids, smart home controls, and adaptive games that can be used hands-free using brainwave patterns.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Why NeuroPlay?</h3>
+      <p>Because everyone deserves access to technology that works for them—our platform is designed to be intuitive, inclusive, and adaptable to different needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Our Values</h3>
+      <p>Accessibility, Empathy, Innovation, Collaboration — these guide everything we build and how we engage with the world.</p>
+    </div>
+  </section>
+
+  <section class="hero">
+    <h1>Our Journey</h1>
+    <p>Here’s how NeuroPlay evolved into a mission-driven platform:</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>2025 - Idea Born</h3>
+      <p>Inspired by a school project on assistive technologies, our team came together with a shared purpose: bridging tech and humanity.</p>
+    </div>
+    <div class="feature-card">
+      <h3>2025 - First Prototype</h3>
+      <p>We launched our first BCI-powered game, tested by volunteers from accessibility communities across the region.</p>
+    </div>
+    <div class="feature-card">
+      <h3>2025 - Platform Expansion</h3>
+      <p>We're working on adding emotion recognition, home automation features, and real-time neurofeedback for users with mobility impairments.</p>
+    </div>
+  </section>
+
+  <section class="hero">
+    <h1>User Stories</h1>
+    <p>Real stories from users who have benefited from NeuroPlay:</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Riya, 12 (India)</h3>
+      <p>"With NeuroPlay, I could play a game with just my thoughts! It felt like magic."</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mark, 30 (Canada)</h3>
+      <p>"I use NeuroPlay's home control system daily. It's a game-changer for someone like me with limited mobility."</p>
+    </div>
+    <div class="feature-card">
+      <h3>Dr. Akash Mehta</h3>
+      <p>"Their platform is not just innovative, it’s compassionate. A perfect blend of neuroscience and humanity."</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Want to learn more?</h2>
+    <p>Contact us to explore partnerships, feedback, or volunteering!</p>
+    <a href="{{ url_for('contact') }}">Reach Out</a>
+  </section>
+</body>
+</html>

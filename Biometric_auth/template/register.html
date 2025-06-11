@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Biometric Registration</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #86dff8);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 5px 30px;
+      border-bottom: 2px solid #000;
+      box-sizing: border-box;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .form-wrapper {
+      background-color: #ffffff;
+      border-radius: 15px;
+      padding: 22px 32px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+      width: 420px;
+      max-width: 95%;
+      margin-top: 20px; /* Prevent overlap with header */
+      margin-bottom: 25px;
+    }
+
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #e5f0fc;
+    }
+
+    .tab {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      background: #f0f0f0;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .tab.active {
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      color: white;
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #333;
+    }
+
+    form input[type="text"],
+    form input[type="email"] {
+      width: 95%;
+      padding: 11px;
+      border: 2px solid #b1b1b1;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 16px;
+      box-shadow: 0px 0px 3px rgba(0, 0, 0, 0.2);
+    }
+
+    form button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+      border: none;
+      color: white;
+      font-weight: bold;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    form button:hover {
+      background: linear-gradient(to right, #005fce, #00acc1);
+    }
+
+    .camera-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 12px;
+    }
+
+    video, img, audio {
+      width: 100%;
+      max-width: 300px;
+      margin-top: 10px;
+      border-radius: 8px;
+      display: block;
+    }
+
+    progress {
+      width: 100%;
+      height: 15px;
+      border-radius: 10px;
+      margin-top: 10px;
+      appearance: none;
+    }
+
+    #recordMessage, #countdown {
+      text-align: center;
+      margin-top: 10px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .button-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .button-row button {
+      flex: 1;
+      white-space: nowrap;
+    }
+
+    .voice-btn {
+      margin-bottom: 10px;
+    }
+
+    #voicePlayback {
+      display: block;
+      margin: 10px auto;
+    }
+
+    button i {
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('home') }}">Home</a>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+    </nav>
+  </header>
+  
+  <div class="form-wrapper">
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('faceTab')">Register / Face</div>
+      <div class="tab" onclick="showTab('voiceTab')">Register / Voice</div>
+    </div>
+    
+    <div id="flash-data" data-message="{{ get_flashed_messages()[0] if get_flashed_messages() else '' }}"></div>
+
+    <!-- Face Registration Form -->
+    <form id="faceForm" method="POST" enctype="multipart/form-data" action="/register/face">
+      <div id="faceTab" class="tab-content active">
+        <h2>Face Registration</h2>
+        <input type="text" name="username" placeholder="Username" required />
+        <input type="email" name="email" placeholder="Email" required />
+        <div class="camera-container">
+          <video id="faceCam" autoplay muted playsinline></video>
+          <img id="facePreview" alt="Captured Face Preview" style="display:none;">
+        </div>
+        <div class="button-row">
+          <button type="button" onclick="captureFace()">
+            <i class="fas fa-camera"></i> Capture Face
+          </button>
+          <button type="button" class="retake-btn" onclick="retakeFace()" id="retakeBtn" style="display:none;">
+            <i class="fas fa-undo"></i> Retake
+          </button>
+        </div>
+        <input type="hidden" name="faceImage" id="faceImage" />
+        <br>
+        <button type="submit">Register</button>
+      </div>
+    </form>
+
+    <!-- Voice Registration Form -->
+    <form id="voiceForm" method="POST" enctype="multipart/form-data" action="/register/voice">
+      <div id="voiceTab" class="tab-content">
+        <h2>Voice Registration</h2>
+        <input type="text" name="voiceUsername" placeholder="Username" required />
+        <input type="email" name="voiceEmail" placeholder="Email" required />
+        <button type="button" onclick="startRecording()" class="voice-btn">
+          <i class="fas fa-microphone"></i> Start Voice Recording
+        </button>
+        <progress id="recordProgress" value="0" max="5" style="display:none;"></progress>
+        <div id="recordMessage" style="display:none;">Recording...</div>
+        <div id="countdown" style="display:none;">5</div>
+        <audio id="voicePlayback" controls style="display:none;"></audio>
+        <input type="hidden" name="voiceData" id="voiceData" />
+        <br>
+        <button type="submit">Register</button>
+      </div>
+    </form>
+
+    <div style="text-align: center; margin-top: 20px;">
+      Already have an account?
+      <a href="{{ url_for('login') }}" style="color: #0072ff; text-decoration: none; font-weight: bold;">
+        Login
+      </a>
+    </div>
+  </div>
+
+  <script>
+    function showTab(tabId) {
+      const tabs = document.querySelectorAll(".tab");
+      const contents = document.querySelectorAll(".tab-content");
+      tabs.forEach(tab => tab.classList.remove("active"));
+      contents.forEach(content => content.classList.remove("active"));
+      document.getElementById(tabId).classList.add("active");
+      document.querySelector(`.tab[onclick*="${tabId}"]`).classList.add("active");
+    }
+
+    const video = document.getElementById('faceCam');
+    const facePreview = document.getElementById('facePreview');
+    const faceInput = document.getElementById('faceImage');
+    const retakeBtn = document.getElementById('retakeBtn');
+
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ video: true })
+        .then(stream => {
+          video.srcObject = stream;
+        })
+        .catch(err => {
+          alert("Unable to access webcam. Please allow camera permissions.");
+        });
+    }
+
+    function captureFace() {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 240;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/png');
+      faceInput.value = imageData;
+      facePreview.src = imageData;
+      facePreview.style.display = 'block';
+      video.style.display = 'none';
+      retakeBtn.style.display = 'inline-block';
+    }
+
+    function retakeFace() {
+      video.style.display = 'block';
+      facePreview.style.display = 'none';
+      retakeBtn.style.display = 'none';
+      faceInput.value = "";
+    }
+
+    let mediaRecorder;
+    let voiceChunks = [];
+
+    function startRecording() {
+      const recordMessage = document.getElementById('recordMessage');
+      const countdown = document.getElementById('countdown');
+      const progress = document.getElementById('recordProgress');
+      const voicePlayback = document.getElementById('voicePlayback');
+      const voiceData = document.getElementById('voiceData');
+
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          mediaRecorder = new MediaRecorder(stream);
+          voiceChunks = [];
+
+          mediaRecorder.ondataavailable = e => {
+            voiceChunks.push(e.data);
+          };
+
+          mediaRecorder.onstop = () => {
+            const audioBlob = new Blob(voiceChunks, { type: 'audio/webm' });
+            const audioURL = URL.createObjectURL(audioBlob);
+            voicePlayback.src = audioURL;
+            voicePlayback.style.display = 'block';
+
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              voiceData.value = reader.result;
+            };
+            reader.readAsDataURL(audioBlob);
+          };
+
+          let count = 5;
+          countdown.innerText = count;
+          progress.value = 0;
+          recordMessage.style.display = 'block';
+          countdown.style.display = 'block';
+          progress.style.display = 'block';
+
+          mediaRecorder.start();
+
+          const interval = setInterval(() => {
+            count--;
+            countdown.innerText = count;
+            progress.value = 5 - count;
+            if (count <= 0) {
+              clearInterval(interval);
+              mediaRecorder.stop();
+              stream.getTracks().forEach(track => track.stop());
+              recordMessage.style.display = 'none';
+              countdown.style.display = 'none';
+              progress.style.display = 'none';
+            }
+          }, 1000);
+        })
+        .catch(err => {
+          alert("Unable to access microphone. Please allow microphone permissions.");
+        });
+    }
+
+    const flashDiv = document.getElementById('flash-data');
+  const message = flashDiv.dataset.message;
+  if (message) {
+    alert(message);
+  }
+  </script>
+
+</body>
+</html>

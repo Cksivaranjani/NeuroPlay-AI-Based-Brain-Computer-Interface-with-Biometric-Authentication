@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>NeuroPlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(to right, #e1e1e2, #bef1ff);
+      color: #333;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(to right, #0f4c81, #34c2d6);
+      padding: 10px 30px;
+      border-bottom: 2px solid #000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+    }
+
+    .logo img {
+      width: 40px;
+      height: 40px;
+      margin-right: 10px;
+    }
+
+    .logo span {
+      font-size: 24px;
+      font-weight: bold;
+      color: white;
+      font-family: 'Audiowide', cursive;
+    }
+
+    nav a {
+      background-color: white;
+      color: black;
+      padding: 8px 15px;
+      margin-left: 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    nav a:hover {
+      background-color: #ddd;
+    }
+
+    .hero { 
+      text-align: center;
+      padding: 25px 15px;
+      color: rgb(13, 13, 13);
+    }
+
+    .hero h1 {
+      font-size: 3rem;
+      margin-left: 30%;
+      max-width: 610px;
+      font-family: 'Audiowide', cursive;
+      margin-bottom: 18px;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 0.5s;
+    }
+
+    .hero p {
+      font-size: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: fadeSlideUp 1s ease-out forwards;
+      animation-delay: 1.2s;
+    }
+
+    @keyframes fadeSlideUp {
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* Typing animation */
+    .typing {
+      display: inline-block;
+      overflow: hidden;
+      white-space: nowrap;
+      border-right: 3px solid #0f4c81;
+      width: 0;
+      animation: typing 3s steps(20) 1s forwards, blink-caret 0.75s step-end 4s infinite;
+    }
+
+    @keyframes typing {
+      from {
+        width: 0;
+      }
+      to {
+        width: 100%;
+      }
+    }
+
+    @keyframes blink-caret {
+      50% {
+        border-color: transparent;
+      }
+    }
+
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      padding: 15px 8px;
+    }
+
+    .feature-card {
+      background-color: white;
+      width: 280px;
+      margin: 20px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      text-align: center;
+    }
+
+    .feature-card h3 {
+      color: #0f4c81;
+      margin-bottom: 9px;
+    }
+
+    .cta {
+      text-align: center;
+      padding: 10px 5px;
+      background: #0f4c81;
+      color: white;
+    }
+
+    .cta a {
+      display: inline-block;
+      margin-top: 15px;
+      background-color: white;
+      color: #0f4c81;
+      font-weight: bold;
+      padding: 8px 15px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: background 0.3s;
+    }
+
+    .cta a:hover {
+      background-color: #ddd;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <img src="{{ url_for('static', filename='images/brain.png') }}" alt="Brain Logo" />
+      <span>NEUROPLAY</span>
+    </div>
+    <nav>
+      <a href="{{ url_for('about') }}">About us</a>
+      <a href="{{ url_for('contact') }}">Contact us</a>
+      <a href="{{ url_for('register') }}">Register / Login</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <h1><span class="typing">Welcome to NeuroPlay</span></h1>
+    <p>Empowering individuals with disabilities through Brain-Computer Interface and AI — explore games, music, voice interaction, and virtual companionship in one inclusive platform.</p>
+  </section>
+
+  <section class="features">
+    <div class="feature-card">
+      <h3>Face & Voice Login</h3>
+      <p>Secure and hands-free login experience using facial recognition and voice authentication.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Maze Game</h3>
+      <p>Enhance cognitive control with an interactive AI-powered maze game.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Thought to Speech</h3>
+      <p>Convert your thoughts into spoken words using neural interface technology.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Mood-Based Music</h3>
+      <p>Let AI understand your emotions and play music that matches your mood.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Virtual Pet</h3>
+      <p>Get company from a smart, friendly virtual pet that adapts to your needs.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Smart Alerts</h3>
+      <p>Stay safe with real-time health and emergency alerts tailored for you.</p>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Start your journey with NeuroPlay</h2>
+    <p>Join us in making technology truly accessible.</p>
+    <a href="{{ url_for('register') }}">Get Started</a>
+  </section>
+
+  <script>
+    // JavaScript to trigger typing animation
+    document.addEventListener("DOMContentLoaded", function() {
+      const typingEffect = document.querySelector(".typing");
+      typingEffect.textContent = "Welcome to NeuroPlay";
+    });
+  </script>
+</body>
+</html>
